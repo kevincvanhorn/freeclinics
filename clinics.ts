@@ -254,12 +254,25 @@ interface User{
         ? index : null
     ).filter(index => index !== null); // All availability date columns
     const allHeaderDateVals = headerValues.filter((_, i) => allHeaderDateCols.includes(i)); // All availability date names
+    
   
     const dateIDRegex = new RegExp("(1[0-2]|0?[1-9])\/(3[01]|[12][0-9]|0?[1-9])"); // Get match [1-12]/[1-31] including 01/02
   
-    function getAvailabilityDates(colIdx: number): AvailabilityDict{
-      let ret : AvailabilityDict = {};
-      let allDateIDs = values.map(row => allHeaderDateCols.map(colIndex => row[colIndex])).slice(1);
+    function getAvailabilityDates(clinicIdx: number): { dates: AvailabilityDict, headerDateCol:number}{
+  
+      //Get the column index of the "Select Date Availability" for this clinic at given index
+      const shortClinicName = CLINICS[clinicIdx][SHORT_NAME];
+      const headerDateCols = headerValues.map((header, idx) =>
+        (header.toString().toLowerCase().includes("date") && header.toString().toLowerCase().includes("availability") && header.toString().toLowerCase().includes(shortClinicName.toLowerCase()))
+          ? idx : null
+      ).filter(index => index !== null); //Aavailability date columns
+      if (headerDateCols.length > 1) {
+        throw new Error("More than one column for clinic present.");
+      }
+      const headerDateCol: number = headerDateCols[0];
+  
+      let dates : AvailabilityDict = {};
+      let allDateIDs = values.map(row => row[headerDateCol]).slice(1);
       console.log(allDateIDs);
       const flattenedArr : string[] = allDateIDs.reduce((acc, innerArr) => acc.concat(innerArr), []).map(x=>x.toString());
       let uniqueDateIDStringsRaw = Array.from(new Set(flattenedArr));
@@ -274,10 +287,10 @@ interface User{
           DefaultUserAssignments : [],
           SpanishTranslatorAssignments : []
         };
-        ret[id] = availability;
+        dates[id] = availability;
       });
       
-      return ret;
+      return { dates, headerDateCol };
     }
   
     // Initialize clinic assignment objects:
@@ -285,34 +298,18 @@ interface User{
     for (let c = 0; c < CLINICS.length; ++c) {
       let { maxDefaultUsers, maxSpanUsers, maxConstraints, groups} = getPromptConstraints(c, promptSheet);
   
+      let { dates, headerDateCol } = getAvailabilityDates(c);
       let clinic: ClinicAssignment = {
         Name: CLINICS[c][LONG_NAME],
         ClinicIndex: c,
-        DateAvailColIndex : -1,
-        AvailabilityDict : getAvailabilityDates(c),
+        DateAvailColIndex: headerDateCol,
+        AvailabilityDict : dates,
         MaxSpanishUsers : maxSpanUsers,
         MaxDefaultUsers : maxDefaultUsers,
         MaxConstraints : maxConstraints,
         SharedMaxIndices : groups
       };
       clinics.push(clinic);
-    }
-  
-    // Set DateAvailColIndex on clinics:
-    for(let c =0; c < CLINICS.length; ++c){
-      const shortClinicName = CLINICS[c][SHORT_NAME];
-  
-      //Get the column index of the "Select Date Availability" for this clinic at given index
-      const headerDateCols = headerValues.map((header, idx) =>
-        (header.toString().toLowerCase().includes("date") && header.toString().toLowerCase().includes("availability") && header.toString().toLowerCase().includes(shortClinicName.toLowerCase()))
-          ? idx : null
-      ).filter(index => index !== null); //Aavailability date columns
-  
-      const headerDateCol = headerDateCols[0];
-      if(headerDateCols.length > 1){ 
-        throw new Error("More than one column for clinic present.");
-      }
-      clinics[c].DateAvailColIndex = headerDateCol;
     }
   
     /**
@@ -445,9 +442,6 @@ interface User{
               date.SpanishTranslatorAssignments.push(result_span);
               numAssigned++;
             }
-          }
-          else{
-            throw new Error("Unexpected date in clinics.");
           }
         });
       } while (numAssigned != 0);
