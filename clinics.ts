@@ -7,6 +7,7 @@ interface User{
     Type : UserType    // Default or Translator
     NumAssignments : number // Number of clninic dates this user has been assigned to
     ClinicRanks : string[] // first index is the highest preference
+    DateIDsAssigned : Set<string> // Which dates has this user been assigned to (to prevent duplicate days)
   }
   
   enum UserType{
@@ -227,6 +228,7 @@ interface User{
           ClinicsOfInterest: clinicMask(values[r][clinicsOfInterestIdx].toString()), // An array of clinic indices
           Type: translatorType(values[r][translatorIdx].toString()),
           NumAssignments : 0,
+          DateIDsAssigned : new Set<string>(),
           ClinicRanks: getClinicRanks(values[r][rankIdx].toString())
         };
         users.push(user);
@@ -235,15 +237,55 @@ interface User{
   //  Assign to clinics ---------------------------
     // First get pools of users per clinic (w/o applying max constraints or duplicate constraints)
     let assignments = assignClinicPools(users, values, promptSheet); 
-    console.log(assignments);
     rankAndChooseUsers(users, assignments, values);
+    console.log(assignments);
   
-    // TODO: rank and assign
     //#endregion
-    
+  
+    let resultSheet =  workbook.getWorksheet("Results") || workbook.addWorksheet("Results");
+    if(resultSheet.getUsedRange() !== undefined) resultSheet.getUsedRange().clear();
+    var results : string[][] = [];//getExcelResults(assignments);
+  
+    let resultHeader : string[]= ["Clinic", "Date", "Volunteers", "Translators"];
+    results.push(resultHeader);
+  
+    assignments.forEach((clinic)=>{
+      Object.values(clinic.AvailabilityDict).forEach((date)=>{
+        let row: string[] = [];
+        row.push(clinic.Name);
+        row.push(date.DateID);
+        row.push(Object.values(Array.from(date.DefaultUserAssignments).map(u => u.Name)).join(","));
+        row.push(Object.values(Array.from(date.SpanishTranslatorAssignments).map(u => u.Name)).join(","));
+        results.push(row);
+      })
+      results.push([]);
+    })
+    results = fillRaggedArrays(results);
+    console.log(results);
+  
+    resultSheet.getRangeByIndexes(0,0,results.length,results[0].length).setValues(results);
+  
     //console.log(users)
     //logPools(assignments);
     //console.log(range.getValues())
+  }
+  
+  function fillRaggedArrays(arr: string[][]): string[][] {
+    // Get the length of the longest ragged array from the input:
+    let maxLength = arr.reduce((max, curr) => Math.max(max, curr.length), 0);
+    // Assign to a new array
+    let newArr : string[][] = Array.from({ length: arr.length }, () => Array.from({ length: maxLength }));
+    for (let i = 0; i < arr.length; i++) {
+      for (let j = 0; j < maxLength; j++) {
+        if (j < arr[i].length) {
+          newArr[i][j] = arr[i][j];
+        } else {
+          newArr[i][j] = undefined;
+        }
+      }
+    }
+  
+    return newArr;
   }
   
   function assignClinicPools(users: User[], values: (string | number | boolean)[][], promptSheet : ExcelScript.Worksheet): ClinicAssignment[]{
@@ -371,7 +413,7 @@ interface User{
     if (language === "default"){ 
       // Hit max constraint
       if (date.DefaultUserAssignments.size >= clinic.MaxDefaultUsers) return undefined;
-      filtered = pool.filter((x)=> !date.DefaultUserAssignments.has(x));
+      filtered = pool.filter((x)=> !x.DateIDsAssigned.has(date.DateID) && !date.DefaultUserAssignments.has(x));
       if (filtered.length === 0) { return undefined; } // Case: all assigned
   
     }
@@ -379,7 +421,7 @@ interface User{
     else if (language == "spanish"){
       // Hit max constraint
       if (date.SpanishTranslatorAssignments.size >= clinic.MaxSpanishUsers) return undefined;
-      filtered = pool.filter((x) => !date.SpanishTranslatorAssignments.has(x));
+      filtered = pool.filter((x) => !x.DateIDsAssigned.has(date.DateID) && !date.SpanishTranslatorAssignments.has(x));
       if (filtered.length === 0) { return undefined; } // Case: all assigned
   
     }
@@ -444,6 +486,7 @@ interface User{
             let result_default = firstByRank(clinic, date.DefaultUserPool, "default", date);
             if (result_default !== undefined) {
               result_default.NumAssignments++;
+              result_default.DateIDsAssigned.add(date.DateID);
               date.DefaultUserAssignments.add(result_default);
               numAssigned++;
             }
@@ -451,6 +494,7 @@ interface User{
             let result_span = firstByRank(clinic, date.SpanishTranslatorPool, "spanish", date);
             if (result_span !== undefined) {
               result_span.NumAssignments++;
+              result_span.DateIDsAssigned.add(date.DateID);
               date.SpanishTranslatorAssignments.add(result_span);
               numAssigned++;
             }
