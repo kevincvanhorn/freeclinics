@@ -5,7 +5,7 @@ interface User{
     MedYear : string
     ClinicsOfInterest : number[] // Clinics of interest for this user
     Type : UserType    // Default or Translator
-    IsAssigned : boolean // Has this user been assigned to a clinic?
+    NumAssignments : number // Number of clninic dates this user has been assigned to
     ClinicRanks : string[] // first index is the highest preference
   }
   
@@ -41,8 +41,8 @@ interface User{
     DateID: string // Simple month / date string
     DefaultUserPool: User[]
     SpanishTranslatorPool: User[] // Spanish translators are a separate pool with their own cap
-    DefaultUserAssignments: User[]
-    SpanishTranslatorAssignments : User[]
+    DefaultUserAssignments: Set<User>
+    SpanishTranslatorAssignments : Set<User>
   }
   
   const SHORT_NAME: number = 0;
@@ -226,7 +226,7 @@ interface User{
           MedYear: values[r][yearIdx].toString(),
           ClinicsOfInterest: clinicMask(values[r][clinicsOfInterestIdx].toString()), // An array of clinic indices
           Type: translatorType(values[r][translatorIdx].toString()),
-          IsAssigned : false,
+          NumAssignments : 0,
           ClinicRanks: getClinicRanks(values[r][rankIdx].toString())
         };
         users.push(user);
@@ -273,7 +273,6 @@ interface User{
   
       let dates : AvailabilityDict = {};
       let allDateIDs = values.map(row => row[headerDateCol]).slice(1);
-      console.log(allDateIDs);
       const flattenedArr : string[] = allDateIDs.reduce((acc, innerArr) => acc.concat(innerArr), []).map(x=>x.toString());
       let uniqueDateIDStringsRaw = Array.from(new Set(flattenedArr));
       const uniqueDateIDs = Array.from(new Set(uniqueDateIDStringsRaw.join(';').split(';').map(s => s.trim())));
@@ -284,8 +283,8 @@ interface User{
           DateID: id,
           DefaultUserPool: [],
           SpanishTranslatorPool: [],
-          DefaultUserAssignments : [],
-          SpanishTranslatorAssignments : []
+          DefaultUserAssignments : new Set<User>(),
+          SpanishTranslatorAssignments : new Set<User>()
         };
         dates[id] = availability;
       });
@@ -362,11 +361,29 @@ interface User{
   /**
    *  Get first available user from pool by rank of preference order: undefined if none found.
    */
-  function firstByRank(clinic : ClinicAssignment, pool : User[], language : string, date : string){
+  function firstByRank(clinic : ClinicAssignment, pool : User[], language : string, date : AvailabilityDate){
     if(pool.length === 0){return undefined;} // Empty pool
   
-    let filtered = pool.filter((x) => !x.IsAssigned);
-    if (filtered.length === 0) { return undefined; } // All assigned
+    // Check if date for this clinic is already at maximum capacity
+    // Then filter the user pool based on what is not already in the assigned set of users to that date
+    let filtered: User[] = [];
+    // DEFAULT -------------
+    if (language === "default"){ 
+      // Hit max constraint
+      if (date.DefaultUserAssignments.size >= clinic.MaxDefaultUsers) return undefined;
+      filtered = pool.filter((x)=> !date.DefaultUserAssignments.has(x));
+      if (filtered.length === 0) { return undefined; } // Case: all assigned
+  
+    }
+    // SPANISH ----------
+    else if (language == "spanish"){
+      // Hit max constraint
+      if (date.SpanishTranslatorAssignments.size >= clinic.MaxSpanishUsers) return undefined;
+      filtered = pool.filter((x) => !date.SpanishTranslatorAssignments.has(x));
+      if (filtered.length === 0) { return undefined; } // Case: all assigned
+  
+    }
+    else throw new Error("Unexpected language parsed.");
   
     // Filtered users (if already assigned), and ordered by rank preference, solving ties with random choice
     let ranks : {user : User, rank :number}[] = [];
@@ -377,11 +394,6 @@ interface User{
   
     if(ranks.length === 0){
       throw new Error("Invalid ranking from user pool");
-      if(pool.length > 0){
-        console.log(clinic.Name + " " + language + " NULL rank ");
-        console.log(users);
-      }
-      return undefined;
     }
   
     // Find first set with same rank
@@ -392,13 +404,13 @@ interface User{
     }
   
     if(tie.length === 1){
-      console.log(clinic.Name + " "+ language + " default, rank " + topRank+ " | "+ tie[0].Name + " | " +date);
+      console.log(clinic.Name + " "+ language + ", rank " + topRank+ " | "+ tie[0].Name + " | " +date.DateID);
       return tie[0];
     }
     else{
       // Get tie of the users tied at the current rank:
       const randomIndex = Math.floor(Math.random() * tie.length);
-      console.log(clinic.Name + " tie, rank " + topRank + " | " + tie[randomIndex].Name + " | " + date);
+      console.log(clinic.Name + " tie, rank " + topRank + " | " + tie[randomIndex].Name + " | " + date.DateID);
       return tie[randomIndex];
     }
   }
@@ -427,19 +439,19 @@ interface User{
         // This prevents one clinic from consuming all of the user availability
         assignments.forEach((clinic) => {
           let date = clinic.AvailabilityDict[dateQuery];
-          if(date !== undefined){
+          if(date !== undefined){ // Is this date in the clinic's list of dates for the month?
             // Default:
-            let result_default = firstByRank(clinic, date.DefaultUserPool, "English", date.DateID);
+            let result_default = firstByRank(clinic, date.DefaultUserPool, "default", date);
             if (result_default !== undefined) {
-              result_default.IsAssigned = true;
-              date.DefaultUserAssignments.push(result_default);
+              result_default.NumAssignments++;
+              date.DefaultUserAssignments.add(result_default);
               numAssigned++;
             }
             // Spanish:
-            let result_span = firstByRank(clinic, date.SpanishTranslatorPool, "Spanish", date.DateID);
+            let result_span = firstByRank(clinic, date.SpanishTranslatorPool, "spanish", date);
             if (result_span !== undefined) {
-              result_span.IsAssigned = true;
-              date.SpanishTranslatorAssignments.push(result_span);
+              result_span.NumAssignments++;
+              date.SpanishTranslatorAssignments.add(result_span);
               numAssigned++;
             }
           }
