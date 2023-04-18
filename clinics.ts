@@ -458,8 +458,6 @@ function firstByRank(clinic : ClinicAssignment, pool : User[], language : string
 }
 
 function rankAndChooseUsers(users: User[], assignments: ClinicAssignment[], values: (string | number | boolean)[][]){
-
-
   // Get all dates to process across all clinics:
   // TODO: this assumes all the same date, and TODO: use start date year for new Date()
   let allDates = assignments.map((clinic) => Object.values(clinic.AvailabilityDict).map((date) => date.DateID)).reduce((acc, cur) => [...acc, ...cur], []);
