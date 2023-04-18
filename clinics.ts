@@ -42,8 +42,11 @@ interface AvailabilityDate{
   DateID: string // Simple month / date string
   DefaultUserPool: User[]
   SpanishTranslatorPool: User[] // Spanish translators are a separate pool with their own cap
+  
   DefaultUserAssignments: Set<User>
   SpanishTranslatorAssignments : Set<User>
+
+  NumDefaultByYr : number[] // number of MS1, MS2, MS3, MS4 by const indices, used for assignment algorithm
 }
 
 const SHORT_NAME: number = 0;
@@ -326,7 +329,8 @@ function assignClinicPools(users: User[], values: (string | number | boolean)[][
         DefaultUserPool: [],
         SpanishTranslatorPool: [],
         DefaultUserAssignments : new Set<User>(),
-        SpanishTranslatorAssignments : new Set<User>()
+        SpanishTranslatorAssignments : new Set<User>(),
+        NumDefaultByYr : [0,0,0,0] // MS1,2,3,4
       };
       dates[id] = availability;
     });
@@ -415,7 +419,6 @@ function firstByRank(clinic : ClinicAssignment, pool : User[], language : string
     if (date.DefaultUserAssignments.size >= clinic.MaxDefaultUsers) return undefined;
     filtered = pool.filter((x)=> !x.DateIDsAssigned.has(date.DateID) && !date.DefaultUserAssignments.has(x));
     if (filtered.length === 0) { return undefined; } // Case: all assigned
-
   }
   // SPANISH ----------
   else if (language == "spanish"){
@@ -458,6 +461,8 @@ function firstByRank(clinic : ClinicAssignment, pool : User[], language : string
 }
 
 function rankAndChooseUsers(users: User[], assignments: ClinicAssignment[], values: (string | number | boolean)[][]){
+
+
   // Get all dates to process across all clinics:
   // TODO: this assumes all the same date, and TODO: use start date year for new Date()
   let allDates = assignments.map((clinic) => Object.values(clinic.AvailabilityDict).map((date) => date.DateID)).reduce((acc, cur) => [...acc, ...cur], []);
