@@ -1,0 +1,58 @@
+1. Forms > Input
+2. Main filters:
+   *the easy part*
+   a) Date Filter = [Start time]
+   b) Clinics of Intereset (strict filter) 
+   c) Date Availability by Clinic [strict filter]
+   e) Translator?
+      > Separate Pool (w/ less constraints)
+   
+3. Assignment Constraints     
+DEFAULT POOL
+   1. Clinic Max Default [strict] (separate from transl)
+   2. Constraints by year groups (MS1,2,3,4)
+      > ex: max [MS1,MS2] = 2, treated as the same year
+   3. Preference Ranking (nonstrict)
+
+TRANSLATOR POOL
+   1. Clinic Max Translators [strict]
+   2. Preference Ranking (nonstrict)
+
+
+
+
+   =============
+   Tanvi Ingle:
+- Lottery-based system: prioritize new volunteers and prevent redundancies (signing up in a row)
+
+Kanoa Kelley:
+- Prioritize people in the elective - special filters (more metadata)
+- Preclerkship vs Clerkship slots
+- Alternative for cancellation (auto)
+- Undergraduate translators
+
+Niyenth Iyengar
+- Undergraduate translators
+- Master excel sheet: 
+  - updated month by month or for the duration
+  - feasibly a long-term
+   > note ADAPTIVE columns & dates ()
+
+Gabrielle
+- college student translators
+- derm interset, every grade level
+> some way to still get the raw data and override
+  > Use FILTERS
+- Don't know who is getting shifts at other free clinics
+
+Hannah Sheard
+
+
+----
+Optional translator
+--> EITHER
+> ability to dynamically add to the translator pool if no spot open
+- Need dates by a certain time,
+  > how long to keep the form open
+
+Alternate Pool by date
