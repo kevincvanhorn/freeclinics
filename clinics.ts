@@ -1,52 +1,53 @@
 //#region Objects [b]
-interface User{
+interface User {
   Row: number
-  Name : string
-  MedYear : string
-  ClinicsOfInterest : number[] // Clinics of interest for this user
-  Type : UserType    // Default or Translator
-  NumAssignments : number // Number of clninic dates this user has been assigned to
-  ClinicRanks : string[] // first index is the highest preference
-  DateIDsAssigned : Set<string> // Which dates has this user been assigned to (to prevent duplicate days)
+  Name: string
+  MedYear: string
+  ClinicsOfInterest: number[] // Clinics of interest for this user
+  Type: UserType    // Default or Translator
+  NumAssignments: number // Number of clninic dates this user has been assigned to
+  ClinicRanks: string[] // first index is the highest preference
+  DateIDsAssigned: Set<string> // Which dates has this user been assigned to (to prevent duplicate days)
 }
 
-enum UserType{
+enum UserType {
   Default,           // Default user type, goes through normal process
   SpanishTranslator  // Special uesr type, assigned to a different pool
 }
 
-interface ClinicAssignment{
-  Name : string
-  ClinicIndex : number // Index corresponding to clinics list
+interface ClinicAssignment {
+  Name: string
+  ClinicIndex: number // Index corresponding to clinics list
   DateAvailColIndex: number // Index of availability col ex: "Select Date Availability for Agape Dermatology"
   AvailabilityDict: AvailabilityDict // Pools for each availability date ex "2/25"
 
   // Constraints:
-  MaxSpanishUsers : number
+  MaxSpanishUsers: number
   MaxDefaultUsers: number // Note Spanish pool is not affected by constraints except for overall Max
-  MaxConstraints : number[] // Max of MS1, MS2, MS3, MS4 by const indices
-  SharedMaxIndices : number [][] // Sets that should share the same bool 
-                              // ex MS1 & MS2 shared => [[0,1][] 
+  MaxConstraints: number[] // Max of MS1, MS2, MS3, MS4 by const indices
+  SharedMaxIndices: number[][] // Sets that should share the same bool 
+  // ex MS1 & MS2 shared => [[0,1][] 
 }
 
-const MS1 = 0;
-const MS2 = 1;
-const MS3 = 2;
-const MS4  = 3;
+const MS0 = 0;
+const MS1 = 1;
+const MS2 = 2;
+const MS3 = 3;
+const MS4 = 4;
 
 interface AvailabilityDict {
   [key: string]: AvailabilityDate;
 }
 
-interface AvailabilityDate{
+interface AvailabilityDate {
   DateID: string // Simple month / date string
   DefaultUserPool: User[]
   SpanishTranslatorPool: User[] // Spanish translators are a separate pool with their own cap
-  
-  DefaultUserAssignments: Set<User>
-  SpanishTranslatorAssignments : Set<User>
 
-  NumDefaultByYr : number[] // number of MS1, MS2, MS3, MS4 by const indices, used for assignment algorithm
+  DefaultUserAssignments: Set<User>
+  SpanishTranslatorAssignments: Set<User>
+
+  NumDefaultByYr: number[] // number of MS0, MS1, MS2, MS3, MS4 by const indices, used for assignment algorithm
 }
 
 const SHORT_NAME: number = 0;
@@ -58,7 +59,8 @@ const CLINICS: [string, string][] = [
   ["Shelter", "UGM Shelter Clinic"],
   ["General", "BBHH General Clinic"],
   ["Women", "BBHH Women's Clinic"],
-  ["Monday", "The Monday Clinic"]
+  ["Monday", "The Monday Clinic"],
+  ["Diabetes","BBHH Diabetes Clinic"]
 ];
 //#endregion
 
@@ -69,30 +71,30 @@ const CLINICS: [string, string][] = [
  */
 function clinicMask(str: string): number[] {
   let ret: number[] = [];
-  for(let i =0; i < CLINICS.length; i++){
-    if(str.toLowerCase().includes(CLINICS[i][SHORT_NAME].toLowerCase())){
+  for (let i = 0; i < CLINICS.length; i++) {
+    if (str.toLowerCase().includes(CLINICS[i][SHORT_NAME].toLowerCase())) {
       ret.push(i);
     }
   }
   return ret;
 }
 
-function translatorType(str: string) : UserType{
+function translatorType(str: string): UserType {
   return str.toLowerCase().includes('y') ? UserType.SpanishTranslator : UserType.Default;
 }
 
 /**
  * Get list of clinic short names by rank.
  */
-function getClinicRanks(str: string){
-  let ranks : string[] = [];
-  let names_long = str.split(';').filter((x)=>x !== undefined && x.length > 0);
-  for(let name of names_long){
+function getClinicRanks(str: string) {
+  let ranks: string[] = [];
+  let names_long = str.split(';').filter((x) => x !== undefined && x.length > 0);
+  for (let name of names_long) {
     let i = CLINICS.findIndex((c) => name.toLowerCase().includes(c[SHORT_NAME].toLowerCase()));
     ranks.push(CLINICS[i][SHORT_NAME])
   }
 
-  if (names_long.length !== ranks.length){
+  if (names_long.length !== ranks.length) {
     throw new Error("Unexpected ranking format in column.");
   }
 
@@ -104,17 +106,38 @@ function getClinicRanks(str: string){
  * Parse variables from a "Prompt" workbook / tab in the excel doc
  * A2 : The start time to query, no user rows will be included before this time
  */
-function validateAndProcessPrompt(promptSheet : ExcelScript.Worksheet){
+function validateAndProcessPrompt(promptSheet: ExcelScript.Worksheet) {
   let values = promptSheet.getUsedRange().getValues();
-  let valid = promptSheet.getRange("A13").getValue() === "Start time"; // A13
+  let valid = promptSheet.getRange("A20").getValue() === "Start time";
 
-  let v = promptSheet.getRange("A14").getValue() as number;
+  let v = promptSheet.getRange("A21").getValue() as number;
   let promptStartDate: Date = new Date(Math.round((v - 25569) * 86400 * 1000));
   valid = valid && !isNaN(promptStartDate.getTime());
 
-  console.log("Prompt: using dates only after " + promptStartDate.toDateString() + ' ' +promptStartDate.toTimeString());
+  console.log("Prompt: using dates only after " + promptStartDate.toDateString() + ' ' + promptStartDate.toTimeString());
 
-  return {promptStartDate, valid}
+  return { promptStartDate, valid }
+}
+
+function validatePromptCells(promptSheet: ExcelScript.Worksheet){
+    // General prompt validation:
+    let valid = promptSheet.getRange("A1").getValue() === "Clinic" 
+      && promptSheet.getRange("A2").getValue() === "Max General Volunteers"
+      && promptSheet.getRange("A3").getValue() === "Max Spanish Translators"
+      && promptSheet.getRange("A4").getValue() === "Max MS0"
+      && promptSheet.getRange("A5").getValue() === "Max MS1"
+      && promptSheet.getRange("A6").getValue() === "Max MS2"
+      && promptSheet.getRange("A7").getValue() === "Max MS3"
+      && promptSheet.getRange("A8").getValue() === "Max MS4"
+      && promptSheet.getRange("A9").getValue() === "Group 1"
+      && promptSheet.getRange("A10").getValue() === "Group 2"
+      && promptSheet.getRange("A11").getValue() === "Group 3"
+      && promptSheet.getRange("A12").getValue() === "Group 4"
+      && promptSheet.getRange("A13").getValue() === "Group 5";
+
+    if (!valid) {
+      throw new Error("Unexpected prompt ordering.");
+    }
 }
 
 /**
@@ -124,43 +147,45 @@ function validateAndProcessPrompt(promptSheet : ExcelScript.Worksheet){
  * Sub groups can have constraints when determining distributions, for example, group MS1s & MS2s and group MS3s and MS4s
  * NOTE 2: If MS1 max is 2 and MS2 max is 2, and the pool has no MS1's then priority will be given to MS2's given that MS3 and MS4 are already filled
  */
-function getPromptConstraints(clinicIdx : number, promptSheet : ExcelScript.Worksheet){
+function getPromptConstraints(clinicIdx: number, promptSheet: ExcelScript.Worksheet) {
   let longName = CLINICS[clinicIdx][LONG_NAME];
   let shortName = CLINICS[clinicIdx][SHORT_NAME];
   let values = promptSheet.getUsedRange().getValues();
 
   // Each column corresponds to variables for a clinic, first col is headers
-  let clinicCol : number = values[0].findIndex((clinicName) => clinicName.toString().toLowerCase().includes(shortName.toLowerCase()));
-  if(values[0][clinicCol] !== longName){
-    throw new Error("Clinic name does not match header in prompt, expected: "+ longName);
+  let clinicCol: number = values[0].findIndex((clinicName) => clinicName.toString().toLowerCase().includes(shortName.toLowerCase()));
+  if (values[0][clinicCol] !== longName) {
+    throw new Error("Clinic name does not match header in prompt, expected: " + longName);
   }
 
   // TODO: add row validation of mapping
   let maxDefaultUsers = values[1][clinicCol] as number; // B2
-  let maxSpanUsers    = values[2][clinicCol] as number; // B3
-  let maxMS1          = values[3][clinicCol] as number; // B4
-  let maxMS2          = values[4][clinicCol] as number; // B5
-  let maxMS3          = values[5][clinicCol] as number; // B6
-  let maxMS4          = values[6][clinicCol] as number; // B7
-  let maxConstraints = [maxMS1, maxMS2, maxMS3, maxMS4]; // Max for [MS1, MS2, MS3, MS4]
+  let maxSpanUsers = values[2][clinicCol] as number; // B3
+  let maxMS0 = values[3][clinicCol] as number; // B4
+  let maxMS1 = values[4][clinicCol] as number; // B5
+  let maxMS2 = values[5][clinicCol] as number; // B6
+  let maxMS3 = values[6][clinicCol] as number; // B7
+  let maxMS4 = values[7][clinicCol] as number; // B8
+  let maxConstraints = [maxMS0, maxMS1, maxMS2, maxMS3, maxMS4]; // Max for [MS1, MS2, MS3, MS4]
 
   // Get groups
-  let groups : number[][] = []; // Check each cell for the MS1-4 numbers
-  let foundIndices : number[] = [];
-  let offset = 7; // B8 - this is an offset for r following:
-  for(let r = 0; r < 4; ++r){ // r corresponds to row and also year index ex: MS1 = 0
-    let groupCell = values[r+offset][clinicCol].toString().toLowerCase();
+  let groups: number[][] = []; // Check each cell for the MS1-4 numbers
+  let foundIndices: number[] = [];
+  let offset = 8; // B8 - this is an offset for r following:
+  let NUM_GROUPS = 5;
+  for (let r = 0; r < NUM_GROUPS; ++r) { // r corresponds to row and also year index ex: MS1 = 0
+    let groupCell = values[r + offset][clinicCol].toString().toLowerCase();
     let subgroup: number[] = [];
-    for(let y = 1; y <= 4; ++y){ // y is year number (1-indexed)
-      if(groupCell.includes(y.toString())){
-        subgroup.push(y-1); // convert to year index (ex: MS1 = 0)
-        if(foundIndices.includes(y-1)){
-          throw new Error("Column "+ longName + " group constraints arenot valid.");
+    for (let y = 1; y <= 4; ++y) { // y is year number (1-indexed)
+      if (groupCell.includes(y.toString())) {
+        subgroup.push(y - 1); // convert to year index (ex: MS1 = 0)
+        if (foundIndices.includes(y - 1)) {
+          throw new Error("Column " + longName + " group constraints arenot valid.");
         }
-        foundIndices.push(y-1);
+        foundIndices.push(y - 1);
       }
     }
-    if(subgroup.length > 1){
+    if (subgroup.length > 1) {
       groups.push(subgroup);
     }
   }
@@ -172,7 +197,7 @@ function getPromptConstraints(clinicIdx : number, promptSheet : ExcelScript.Work
  * Filter range based on a prompted start time (inclusive)
  * @param startTimeIdx the index of the column "Start time" to filter rows from
  */
-function filterRows(range: ExcelScript.Range, promptStartDate: Date, startTimeIdx: number) : (number | boolean | string)[][]{
+function filterRows(range: ExcelScript.Range, promptStartDate: Date, startTimeIdx: number): (number | boolean | string)[][] {
   const rowCount = range.getRowCount();
   let ret: (number | boolean | string)[][] = [];
   let values = range.getValues();
@@ -210,50 +235,51 @@ function main(workbook: ExcelScript.Workbook) {
   const translatorIdx = headerValues.indexOf("Are you interested in being a translator (Spanish) instead of a general volunteer?")
   const startTimeIdx = headerValues.indexOf("Start time");
   const rankIdx = headerValues.indexOf("Please rank your clinic preference");
-  
+
   // FILTER values based on prompt start time (inclusive)
   let promptSheet = workbook.getWorksheet(PROMPT_TAB);
-  const { promptStartDate, valid} = validateAndProcessPrompt(promptSheet)
+  validatePromptCells(promptSheet); // Are fields in the prompt tab where we expect them?
+  const { promptStartDate, valid } = validateAndProcessPrompt(promptSheet)
   if (!valid) {
-    console.log("Invalid prompts"); return;
+    throw new Error("Invalid prompts - Date was not found.");
   }
   values = filterRows(range, promptStartDate, startTimeIdx)// Update values with 'Start time' from prompt start range
   //#endregion
 
   //#region Process Rows
   // Create user objects ---------------------------
-  let users : User[] =[];
-  for (let r = 1; r < values.length/*numRows*/; r++){
-      let user: User = {
-        Row: r,
-        Name: values[r][nameIdx].toString(),
-        MedYear: values[r][yearIdx].toString(),
-        ClinicsOfInterest: clinicMask(values[r][clinicsOfInterestIdx].toString()), // An array of clinic indices
-        Type: translatorType(values[r][translatorIdx].toString()),
-        NumAssignments : 0,
-        DateIDsAssigned : new Set<string>(),
-        ClinicRanks: getClinicRanks(values[r][rankIdx].toString())
-      };
-      users.push(user);
+  let users: User[] = [];
+  for (let r = 1; r < values.length/*numRows*/; r++) {
+    let user: User = {
+      Row: r,
+      Name: values[r][nameIdx].toString(),
+      MedYear: values[r][yearIdx].toString(),
+      ClinicsOfInterest: clinicMask(values[r][clinicsOfInterestIdx].toString()), // An array of clinic indices
+      Type: translatorType(values[r][translatorIdx].toString()),
+      NumAssignments: 0,
+      DateIDsAssigned: new Set<string>(),
+      ClinicRanks: getClinicRanks(values[r][rankIdx].toString())
+    };
+    users.push(user);
   }
 
-//  Assign to clinics ---------------------------
+  //  Assign to clinics ---------------------------
   // First get pools of users per clinic (w/o applying max constraints or duplicate constraints)
-  let assignments = assignClinicPools(users, values, promptSheet); 
+  let assignments = assignClinicPools(users, values, promptSheet);
   rankAndChooseUsers(users, assignments, values);
   console.log(assignments);
 
   //#endregion
 
-  let resultSheet =  workbook.getWorksheet("Results") || workbook.addWorksheet("Results");
-  if(resultSheet.getUsedRange() !== undefined) resultSheet.getUsedRange().clear();
-  var results : string[][] = [];//getExcelResults(assignments);
+  let resultSheet = workbook.getWorksheet("Results") || workbook.addWorksheet("Results");
+  if (resultSheet.getUsedRange() !== undefined) resultSheet.getUsedRange().clear();
+  var results: string[][] = [];//getExcelResults(assignments);
 
-  let resultHeader : string[]= ["Clinic", "Date", "Volunteers", "Translators"];
+  let resultHeader: string[] = ["Clinic", "Date", "Volunteers", "Translators"];
   results.push(resultHeader);
 
-  assignments.forEach((clinic)=>{
-    Object.values(clinic.AvailabilityDict).forEach((date)=>{
+  assignments.forEach((clinic) => {
+    Object.values(clinic.AvailabilityDict).forEach((date) => {
       let row: string[] = [];
       row.push(clinic.Name);
       row.push(date.DateID);
@@ -266,7 +292,7 @@ function main(workbook: ExcelScript.Workbook) {
   results = fillRaggedArrays(results);
   console.log(results);
 
-  resultSheet.getRangeByIndexes(0,0,results.length,results[0].length).setValues(results);
+  resultSheet.getRangeByIndexes(0, 0, results.length, results[0].length).setValues(results);
 
   //console.log(users)
   //logPools(assignments);
@@ -277,13 +303,13 @@ function fillRaggedArrays(arr: string[][]): string[][] {
   // Get the length of the longest ragged array from the input:
   let maxLength = arr.reduce((max, curr) => Math.max(max, curr.length), 0);
   // Assign to a new array
-  let newArr : string[][] = Array.from({ length: arr.length }, () => Array.from({ length: maxLength }));
+  let newArr: string[][] = Array.from({ length: arr.length }, () => Array.from({ length: maxLength }));
   for (let i = 0; i < arr.length; i++) {
     for (let j = 0; j < maxLength; j++) {
       if (j < arr[i].length) {
         newArr[i][j] = arr[i][j];
       } else {
-        newArr[i][j] = undefined;
+        newArr[i][j] = ""; // undefined
       }
     }
   }
@@ -291,7 +317,7 @@ function fillRaggedArrays(arr: string[][]): string[][] {
   return newArr;
 }
 
-function assignClinicPools(users: User[], values: (string | number | boolean)[][], promptSheet : ExcelScript.Worksheet): ClinicAssignment[]{
+function assignClinicPools(users: User[], values: (string | number | boolean)[][], promptSheet: ExcelScript.Worksheet): ClinicAssignment[] {
   // Get all date-specific columns:
   const headerValues = values[0];
   const allHeaderDateCols = headerValues.map((item, index) =>
@@ -299,11 +325,11 @@ function assignClinicPools(users: User[], values: (string | number | boolean)[][
       ? index : null
   ).filter(index => index !== null); // All availability date columns
   const allHeaderDateVals = headerValues.filter((_, i) => allHeaderDateCols.includes(i)); // All availability date names
-  
+
 
   const dateIDRegex = new RegExp("(1[0-2]|0?[1-9])\/(3[01]|[12][0-9]|0?[1-9])"); // Get match [1-12]/[1-31] including 01/02
 
-  function getAvailabilityDates(clinicIdx: number): { dates: AvailabilityDict, headerDateCol:number}{
+  function getAvailabilityDates(clinicIdx: number): { dates: AvailabilityDict, headerDateCol: number } {
 
     //Get the column index of the "Select Date Availability" for this clinic at given index
     const shortClinicName = CLINICS[clinicIdx][SHORT_NAME];
@@ -314,45 +340,45 @@ function assignClinicPools(users: User[], values: (string | number | boolean)[][
     if (headerDateCols.length > 1) {
       throw new Error("More than one column for clinic present.");
     }
-    const headerDateCol: number = headerDateCols[0];
+    const headerDateCol: number = headerDateCols[0] as number;
 
-    let dates : AvailabilityDict = {};
+    let dates: AvailabilityDict = {};
     let allDateIDs = values.map(row => row[headerDateCol]).slice(1);
-    const flattenedArr : string[] = allDateIDs.reduce((acc, innerArr) => acc.concat(innerArr), []).map(x=>x.toString());
+    const flattenedArr: string[] = allDateIDs.reduce((acc, innerArr) => acc.concat(innerArr), []).map(x => x.toString());
     let uniqueDateIDStringsRaw = Array.from(new Set(flattenedArr));
     const uniqueDateIDs = Array.from(new Set(uniqueDateIDStringsRaw.join(';').split(';').map(s => s.trim())));
-    const finalIDs = uniqueDateIDs.filter((str) => dateIDRegex.test(str)).map(x=>x.match(dateIDRegex)[0]);
+    const finalIDs = uniqueDateIDs.filter((str) => dateIDRegex.test(str)).map(x => x.match(dateIDRegex)[0]);
 
-    finalIDs.forEach((id)=>{
+    finalIDs.forEach((id) => {
       let availability: AvailabilityDate = {
         DateID: id,
         DefaultUserPool: [],
         SpanishTranslatorPool: [],
-        DefaultUserAssignments : new Set<User>(),
-        SpanishTranslatorAssignments : new Set<User>(),
-        NumDefaultByYr : [0,0,0,0] // MS1,2,3,4
+        DefaultUserAssignments: new Set<User>(),
+        SpanishTranslatorAssignments: new Set<User>(),
+        NumDefaultByYr: [0, 0, 0, 0] // MS1,2,3,4
       };
       dates[id] = availability;
     });
-    
+
     return { dates, headerDateCol };
   }
 
   // Initialize clinic assignment objects:
   let clinics: ClinicAssignment[] = [];
   for (let c = 0; c < CLINICS.length; ++c) {
-    let { maxDefaultUsers, maxSpanUsers, maxConstraints, groups} = getPromptConstraints(c, promptSheet);
+    let { maxDefaultUsers, maxSpanUsers, maxConstraints, groups } = getPromptConstraints(c, promptSheet);
 
     let { dates, headerDateCol } = getAvailabilityDates(c);
     let clinic: ClinicAssignment = {
       Name: CLINICS[c][LONG_NAME],
       ClinicIndex: c,
       DateAvailColIndex: headerDateCol,
-      AvailabilityDict : dates,
-      MaxSpanishUsers : maxSpanUsers,
-      MaxDefaultUsers : maxDefaultUsers,
-      MaxConstraints : maxConstraints,
-      SharedMaxIndices : groups
+      AvailabilityDict: dates,
+      MaxSpanishUsers: maxSpanUsers,
+      MaxDefaultUsers: maxDefaultUsers,
+      MaxConstraints: maxConstraints,
+      SharedMaxIndices: groups
     };
     clinics.push(clinic);
   }
@@ -361,7 +387,7 @@ function assignClinicPools(users: User[], values: (string | number | boolean)[][
    * Is the given user valid at a provided clinic?
    * Precondition: this clinic is already one of the users preferences.
    */
-  function userIsValid(_user: User, clinicIdx : number) : [boolean, string[]]{
+  function userIsValid(_user: User, clinicIdx: number): [boolean, string[]] {
     let clinic = clinics[clinicIdx];
     let availabilityStr = values[_user.Row][clinic.DateAvailColIndex].toString();
 
@@ -375,19 +401,19 @@ function assignClinicPools(users: User[], values: (string | number | boolean)[][
   // Assign users to each clinic pool
   // Note this does not prevent duplicate assignments across clinics on the same day and needs to be adjusted after filter, also does not apply prompt maxes per pool
   users.forEach(
-    (user) =>{
+    (user) => {
       user.ClinicsOfInterest.forEach((clinicIdx) => {  // First filter by clinics of interest
-      const [valid, ids] = userIsValid(user, clinicIdx);
-        if (valid) { 
-            //clinics[clinicIdx].DefaultUserPool.push(user);
-            for(let dateID of ids){
-              if (user.Type == UserType.Default){
-                clinics[clinicIdx].AvailabilityDict[dateID].DefaultUserPool.push(user);
-              }
-              else if (user.Type == UserType.SpanishTranslator){
-                clinics[clinicIdx].AvailabilityDict[dateID].SpanishTranslatorPool.push(user);
-              }
+        const [valid, ids] = userIsValid(user, clinicIdx);
+        if (valid) {
+          //clinics[clinicIdx].DefaultUserPool.push(user);
+          for (let dateID of ids) {
+            if (user.Type == UserType.Default) {
+              clinics[clinicIdx].AvailabilityDict[dateID].DefaultUserPool.push(user);
             }
+            else if (user.Type == UserType.SpanishTranslator) {
+              clinics[clinicIdx].AvailabilityDict[dateID].SpanishTranslatorPool.push(user);
+            }
+          }
         }
       });
     }
@@ -398,30 +424,30 @@ function assignClinicPools(users: User[], values: (string | number | boolean)[][
 }
 
 /** 1 (highest preference) to infinity rank given a user and query clinic */
-function rank(user : User, clinicIdx : number){
+function rank(user: User, clinicIdx: number) {
   let i = user.ClinicRanks.findIndex((r) => r.toLowerCase().includes(CLINICS[clinicIdx][SHORT_NAME].toLowerCase()));
-  if(i<0) throw new Error("Rank not found for user.");
-  return i+1; // Convert to 1-indexed
+  if (i < 0) throw new Error("Rank not found for user.");
+  return i + 1; // Convert to 1-indexed
 }
 
 /**
  *  Get first available user from pool by rank of preference order: undefined if none found.
  */
-function firstByRank(clinic : ClinicAssignment, pool : User[], language : string, date : AvailabilityDate){
-  if(pool.length === 0){return undefined;} // Empty pool
+function firstByRank(clinic: ClinicAssignment, pool: User[], language: string, date: AvailabilityDate) {
+  if (pool.length === 0) { return undefined; } // Empty pool
 
   // Check if date for this clinic is already at maximum capacity
   // Then filter the user pool based on what is not already in the assigned set of users to that date
   let filtered: User[] = [];
   // DEFAULT -------------
-  if (language === "default"){ 
+  if (language === "default") {
     // Hit max constraint
     if (date.DefaultUserAssignments.size >= clinic.MaxDefaultUsers) return undefined;
-    filtered = pool.filter((x)=> !x.DateIDsAssigned.has(date.DateID) && !date.DefaultUserAssignments.has(x));
+    filtered = pool.filter((x) => !x.DateIDsAssigned.has(date.DateID) && !date.DefaultUserAssignments.has(x));
     if (filtered.length === 0) { return undefined; } // Case: all assigned
   }
   // SPANISH ----------
-  else if (language == "spanish"){
+  else if (language == "spanish") {
     // Hit max constraint
     if (date.SpanishTranslatorAssignments.size >= clinic.MaxSpanishUsers) return undefined;
     filtered = pool.filter((x) => !x.DateIDsAssigned.has(date.DateID) && !date.SpanishTranslatorAssignments.has(x));
@@ -431,28 +457,28 @@ function firstByRank(clinic : ClinicAssignment, pool : User[], language : string
   else throw new Error("Unexpected language parsed.");
 
   // Filtered users (if already assigned), and ordered by rank preference, solving ties with random choice
-  let ranks : {user : User, rank :number}[] = [];
-  let users = filtered.sort((u)=>  rank(u, clinic.ClinicIndex));
-  for(let u of users){
-    ranks.push({user:u, rank:rank(u, clinic.ClinicIndex)}); // TODO optimize
+  let ranks: { user: User, rank: number }[] = [];
+  let users = filtered.sort((u) => rank(u, clinic.ClinicIndex));
+  for (let u of users) {
+    ranks.push({ user: u, rank: rank(u, clinic.ClinicIndex) }); // TODO optimize
   }
 
-  if(ranks.length === 0){
+  if (ranks.length === 0) {
     throw new Error("Invalid ranking from user pool");
   }
 
   // Find first set with same rank
   let topRank = ranks[0].rank;
-  let tie : User[] = [];
-  for(let i =0; i < ranks.length && ranks[i].rank == topRank; ++i){
+  let tie: User[] = [];
+  for (let i = 0; i < ranks.length && ranks[i].rank == topRank; ++i) {
     tie.push(ranks[i].user);
   }
 
-  if(tie.length === 1){
-    console.log(clinic.Name + " "+ language + ", rank " + topRank+ " | "+ tie[0].Name + " | " +date.DateID);
+  if (tie.length === 1) {
+    console.log(clinic.Name + " " + language + ", rank " + topRank + " | " + tie[0].Name + " | " + date.DateID);
     return tie[0];
   }
-  else{
+  else {
     // Get tie of the users tied at the current rank:
     const randomIndex = Math.floor(Math.random() * tie.length);
     console.log(clinic.Name + " tie, rank " + topRank + " | " + tie[randomIndex].Name + " | " + date.DateID);
@@ -460,7 +486,7 @@ function firstByRank(clinic : ClinicAssignment, pool : User[], language : string
   }
 }
 
-function rankAndChooseUsers(users: User[], assignments: ClinicAssignment[], values: (string | number | boolean)[][]){
+function rankAndChooseUsers(users: User[], assignments: ClinicAssignment[], values: (string | number | boolean)[][]) {
 
 
   // Get all dates to process across all clinics:
@@ -468,14 +494,13 @@ function rankAndChooseUsers(users: User[], assignments: ClinicAssignment[], valu
   let allDates = assignments.map((clinic) => Object.values(clinic.AvailabilityDict).map((date) => date.DateID)).reduce((acc, cur) => [...acc, ...cur], []);
   let uniqueDates = Array.from(new Set(allDates));
   const sortedDates: string[] = uniqueDates.sort((a, b) => {
-      const [aMonth, aDay] = a.split('/'), [bMonth, bDay] = b.split('/');
-      return new Date(parseInt(aMonth) - 1, parseInt(aDay)).getTime() - new Date(parseInt(bMonth) - 1, parseInt(bDay)).getTime();
+    const [aMonth, aDay] = a.split('/'), [bMonth, bDay] = b.split('/');
+    return new Date(parseInt(aMonth) - 1, parseInt(aDay)).getTime() - new Date(parseInt(bMonth) - 1, parseInt(bDay)).getTime();
   });
   console.log("Parsing the following dates:", sortedDates);
 
   // VISIT each date separately for multi-assignment:
-  sortedDates.forEach((dateQuery)=>
-  {
+  sortedDates.forEach((dateQuery) => {
     let numAssigned = 0;
     do {
       numAssigned = 0;
@@ -484,7 +509,7 @@ function rankAndChooseUsers(users: User[], assignments: ClinicAssignment[], valu
       // This prevents one clinic from consuming all of the user availability
       assignments.forEach((clinic) => {
         let date = clinic.AvailabilityDict[dateQuery];
-        if(date !== undefined){ // Is this date in the clinic's list of dates for the month?
+        if (date !== undefined) { // Is this date in the clinic's list of dates for the month?
           // Default:
           let result_default = firstByRank(clinic, date.DefaultUserPool, "default", date);
           if (result_default !== undefined) {
@@ -508,17 +533,17 @@ function rankAndChooseUsers(users: User[], assignments: ClinicAssignment[], valu
 }
 
 //#region Utilities
-function logPools(assignments: ClinicAssignment[])  {
+function logPools(assignments: ClinicAssignment[]) {
   console.log("\n")
   assignments.forEach(
-    (clinic)=>{
+    (clinic) => {
       console.log(clinic.Name);
-      for(let date in clinic.AvailabilityDict){
+      for (let date in clinic.AvailabilityDict) {
         let obj = clinic.AvailabilityDict[date];
-        if (obj.DefaultUserPool.length >0){
+        if (obj.DefaultUserPool.length > 0) {
           console.log("Default " + obj.DateID + ": { " + obj.DefaultUserPool.map((u) => u.Name).join() + " }");
         }
-        if(obj.SpanishTranslatorPool.length > 0){
+        if (obj.SpanishTranslatorPool.length > 0) {
           console.log("Spanish " + obj.DateID + ": { " + obj.SpanishTranslatorPool.map((u) => u.Name).join() + "}");
         }
       }
