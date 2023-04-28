@@ -4,6 +4,8 @@ const VERBOSE = false;
 // Spread assignment - based on user pool per iteration
 // TODO: Spanish general volunteer type
 // TODO: datetime overlap & get sorting functionality back
+// Validate: no issues with extra clinic
+// TODO: electives
 
 //#region Objects [b]
 interface User {
@@ -15,6 +17,9 @@ interface User {
   Type: UserType    // Default or Translator
   NumAssignments: number // Number of clninic dates this user has been assigned to
   ClinicRanks: string[] // first index is the highest preference
+
+  // CACHE
+  DateIDsAvailable: Set<string> // Which dates can this be assigned to? 
   DateIDsAssigned: Set<string> // Which dates has this user been assigned to (to prevent duplicate days)
 }
 
@@ -281,6 +286,7 @@ function main(workbook: ExcelScript.Workbook) {
       ClinicsOfInterest: clinicMask(values[r][clinicsOfInterestIdx].toString()), // An array of clinic indices
       Type: translatorType(values[r][translatorIdx].toString()),
       NumAssignments: 0,
+      DateIDsAvailable: new Set<string>(),
       DateIDsAssigned: new Set<string>(),
       ClinicRanks: getClinicRanks(values[r][rankIdx].toString())
     };
@@ -472,9 +478,11 @@ function assignClinicPools(users: User[], values: (string | number | boolean)[][
           for (let dateID of ids) {
             if (user.Type == UserType.Default) {
               clinics[clinicIdx].AvailabilityDict[dateID].DefaultUserPool.push(user);
+              user.DateIDsAvailable.add(dateID);
             }
             else if (user.Type == UserType.SpanishTranslator) {
               clinics[clinicIdx].AvailabilityDict[dateID].SpanishTranslatorPool.push(user);
+              user.DateIDsAvailable.add(dateID);
             }
           }
         }
@@ -554,9 +562,63 @@ function firstByRank(clinic: ClinicAssignment, pool: User[], language: string, d
   }
 }
 
+/**
+ * Get all of the users at the minimum rank given the available clinics for assignment
+ */
+function minRankUsers(availableUsers : Set<User>, availableClinics : Set<ClinicAssignment>, rankFloor:number) : {user:User, clinic:ClinicAssignment}[]{
+  let minrank = 1000; // feasibly no way for 1000 clinics
+
+  let minMap : {rank : number, userPool : {user:User, clinic:ClinicAssignment}[]}[] = [];
+  for(let i =1; i <= CLINICS.length; ++i){ // one-indexed allocation
+    minMap.push({rank:i, userPool:[]});
+  }
+
+  availableUsers.forEach(u=>{
+    availableClinics.forEach(c=>{
+      let r = rank(u, c.ClinicIndex);
+      if(r < minrank && r >= rankFloor){
+        minrank = r;
+        let _i = minMap.findIndex(x=>x.rank == r);
+        if(_i < 0) throw new Error("Invalid indexing for rank determination.");
+        minMap[_i].userPool.push({user:u, clinic: c});
+      }
+    });
+  });
+
+  if (minrank < 0 || minrank >= 1000) return []; //throw new Error("Ranks not found for query."); // one of the sets is empty?
+  let r = minMap.findIndex(x=>x.rank == minrank);
+  if(r < 0) throw new Error("Invalid indexing for rank determination from min.");
+  return minMap[r].userPool; // Get all users with the lowest rank
+}
+
+enum Pass {
+  Preference,  // try to assign by rank respecting groups and clinic preference (ex. only one MS1)
+  Fill
+}
+
+/**
+ * Don't agressively assign if regular group constraints aren't met.
+ * Assign from tie otherwise depending on clinic rules. 
+ * PRECONDITION: clinic is not full for the given type
+ */
+function tryAssignFromTie(tie : User[], clinic : ClinicAssignment, userType : UserType, pass : Pass){
+  // Are constraints met?
+  // Note no constraints for translators
+  if(userType == UserType.Default){
+  }
+
+  if (tie.length === 1) {
+    return tie[0];
+  }
+  // else if clinic prioritizes electives
+  else {
+    // Get tie of the users tied at the current rank:
+    const randomIndex = Math.floor(Math.random() * tie.length);
+    return tie[randomIndex];
+  }
+}
+
 function rankAndChooseUsers(users: User[], assignments: ClinicAssignment[], values: (string | number | boolean)[][]) {
-
-
   // Get all dates to process across all clinics:
   // TODO: this assumes all the same date, and TODO: use start date year for new Date()
   let allDates = assignments.map((clinic) => Object.values(clinic.AvailabilityDict).map((date) => date.DateID)).reduce((acc, cur) => [...acc, ...cur], []);
@@ -570,8 +632,51 @@ function rankAndChooseUsers(users: User[], assignments: ClinicAssignment[], valu
   console.log("Parsing the following dates:", sortedDates);
   checkForDateDuplicates(sortedDates);
 
+  const passes = [Pass.Preference, Pass.Fill];
+
+  // Visit each date:
+  let userTypes = [UserType.Default, UserType.SpanishVolunteer];
+  sortedDates.forEach((dateQuery)=>{
+    let numAssigned =0;
+    
+      userTypes.forEach((userType)=>{
+        // Get distribution of users across clinics at each rank:
+        let availableUsers = new Set(users.filter(u=>u.Type === userType && u.DateIDsAvailable.has(dateQuery)));
+        let availableClinics = new Set(assignments); // This assumes that each clinic wants at least one user of both types
+        for(let pass =0; pass < 2; ++pass){
+          let passType = passes[pass]; // Different behaviour depending on assignment pass
+          if(availableUsers.size == 0 || availableClinics.size == 0) break; // Stop passes if no valid sets
+          let rankFloor = 1; // the min  rank possible
+          do { // While there is still something to assign and 1-indexed rank is <= CLINICS.length
+            numAssigned = 0;
+
+            if(passType == Pass.Preference){
+              // Visit current best rank (0 = best) in user pool for this date (of those who haven't been assigned):
+              // PRECONDITION: any clinic in availableClinics has a spot for this user type
+              let minRanked = minRankUsers(availableUsers, availableClinics, rankFloor); // Index 
+              if(minRanked.length == 0) throw new Error("No available ranks found.");
+            
+              // During this loop, only assign one user to each clinic
+              // Respect constraints of groups for the clinics of contention
+              availableClinics.forEach(c=>{
+                let tie = minRanked.filter(m=>m.clinic.ClinicIndex == c.ClinicIndex).map(_u=>_u.user);
+                if(tie.length > 0){
+                  let assignment = tryAssignFromTie(tie, c, userType, pass);
+                  if(assignment !== undefined){
+
+                  }
+                }
+              });
+            }
+            let cPushed : Set<number> = new Set<number>();
+            rankFloor++;
+          } while ((numAssigned != 0 || rankFloor <= CLINICS.length) && availableUsers.size > 0 && availableClinics.size >0);
+        }  
+      });
+  });
+
   // VISIT each date separately for multi-assignment:
-  sortedDates.forEach((dateQuery) => {
+  /*sortedDates.forEach((dateQuery) => {
     let numAssigned = 0;
     do {
       numAssigned = 0;
@@ -589,7 +694,7 @@ function rankAndChooseUsers(users: User[], assignments: ClinicAssignment[], valu
             date.DefaultUserAssignments.add(result_default);
             numAssigned++;
           }
-          // Spanish:
+          // Spanish Translator:
           let result_span = firstByRank(clinic, date.SpanishTranslatorPool, "spanish", date);
           if (result_span !== undefined) {
             result_span.NumAssignments++;
@@ -600,7 +705,7 @@ function rankAndChooseUsers(users: User[], assignments: ClinicAssignment[], valu
         }
       });
     } while (numAssigned != 0);
-  });
+  });*/
 }
 
 //#region Utilities
