@@ -1,8 +1,16 @@
+const TESTING = true;
+const VERBOSE = false;
+// TODO: constraint support
+// Spread assignment - based on user pool per iteration
+// TODO: Spanish general volunteer type
+// TODO: datetime overlap & get sorting functionality back
+
 //#region Objects [b]
 interface User {
   Row: number
   Name: string
   MedYear: string
+  Elective : boolean // Elective course (for 4th years only? - not enforced)
   ClinicsOfInterest: number[] // Clinics of interest for this user
   Type: UserType    // Default or Translator
   NumAssignments: number // Number of clninic dates this user has been assigned to
@@ -12,7 +20,8 @@ interface User {
 
 enum UserType {
   Default,           // Default user type, goes through normal process
-  SpanishTranslator  // Special uesr type, assigned to a different pool
+  SpanishVolunteer,  // TODO: A default user that can also serve as a translator (pool depends on the clinic)
+  SpanishTranslator  // Special user type, assigned to a different pool
 }
 
 interface ClinicAssignment {
@@ -80,6 +89,7 @@ function clinicMask(str: string): number[] {
 }
 
 function translatorType(str: string): UserType {
+  // if(str.toLowerCase().includes('but')) return UserType.SpanishVolunteer; // "I would like to be a general volunteer but can also speak Spanish."
   return str.toLowerCase().includes('y') ? UserType.SpanishTranslator : UserType.Default;
 }
 
@@ -211,6 +221,14 @@ function filterRows(range: ExcelScript.Range, promptStartDate: Date, startTimeId
 
   return ret;
 }
+
+/**
+ * Convert from field "Undergraduate" or "Undergrad" to MS0 
+ **/
+function interpretYear(yr : string){
+  if(yr.toLowerCase().includes("under")){ return "MS0"; }
+  return yr;
+}
 //#endregion
 
 const PROMPT_TAB = "Prompt"; // Name of tab with prompt / filter variables
@@ -235,6 +253,11 @@ function main(workbook: ExcelScript.Workbook) {
   const translatorIdx = headerValues.indexOf("Are you interested in being a translator (Spanish) instead of a general volunteer?")
   const startTimeIdx = headerValues.indexOf("Start time");
   const rankIdx = headerValues.indexOf("Please rank your clinic preference");
+  const electiveIdx = headerValues.indexOf("Are you currently in the fourth-year elective?");
+
+  if(nameIdx < 0 || yearIdx < 0 || clinicsOfInterestIdx < 0 || translatorIdx < 0 || startTimeIdx < 0 || rankIdx < 0 || electiveIdx < 0){
+    throw new Error("Invalid Headers - check that names have not been changed");
+  }
 
   // FILTER values based on prompt start time (inclusive)
   let promptSheet = workbook.getWorksheet(PROMPT_TAB);
@@ -253,7 +276,8 @@ function main(workbook: ExcelScript.Workbook) {
     let user: User = {
       Row: r,
       Name: values[r][nameIdx].toString(),
-      MedYear: values[r][yearIdx].toString(),
+      MedYear: interpretYear(values[r][yearIdx].toString()),
+      Elective : values[r][electiveIdx].toString().toLowerCase().includes('y'),
       ClinicsOfInterest: clinicMask(values[r][clinicsOfInterestIdx].toString()), // An array of clinic indices
       Type: translatorType(values[r][translatorIdx].toString()),
       NumAssignments: 0,
@@ -262,6 +286,8 @@ function main(workbook: ExcelScript.Workbook) {
     };
     users.push(user);
   }
+
+  console.log("Found " + users.length + " users.");
 
   //  Assign to clinics ---------------------------
   // First get pools of users per clinic (w/o applying max constraints or duplicate constraints)
@@ -317,6 +343,12 @@ function fillRaggedArrays(arr: string[][]): string[][] {
   return newArr;
 }
 
+const hasDuplicates = (array: string[]): boolean => {
+  return new Set(array).size !== array.length;
+};
+
+const dateIDRegex = new RegExp("(1[0-2]|0?[1-9])\/(3[01]|[12][0-9]|0?[1-9])"); // Get match [1-12]/[1-31] including 01/02
+
 function assignClinicPools(users: User[], values: (string | number | boolean)[][], promptSheet: ExcelScript.Worksheet): ClinicAssignment[] {
   // Get all date-specific columns:
   const headerValues = values[0];
@@ -325,10 +357,6 @@ function assignClinicPools(users: User[], values: (string | number | boolean)[][
       ? index : null
   ).filter(index => index !== null); // All availability date columns
   const allHeaderDateVals = headerValues.filter((_, i) => allHeaderDateCols.includes(i)); // All availability date names
-
-
-  const dateIDRegex = new RegExp("(1[0-2]|0?[1-9])\/(3[01]|[12][0-9]|0?[1-9])"); // Get match [1-12]/[1-31] including 01/02
-
   function getAvailabilityDates(clinicIdx: number): { dates: AvailabilityDict, headerDateCol: number } {
 
     //Get the column index of the "Select Date Availability" for this clinic at given index
@@ -340,6 +368,9 @@ function assignClinicPools(users: User[], values: (string | number | boolean)[][
     if (headerDateCols.length > 1) {
       throw new Error("More than one column for clinic present.");
     }
+    else if(headerDateCols.length ==0){
+      throw new Error("No columns for clinic present.");
+    }
     const headerDateCol: number = headerDateCols[0] as number;
 
     let dates: AvailabilityDict = {};
@@ -347,7 +378,16 @@ function assignClinicPools(users: User[], values: (string | number | boolean)[][
     const flattenedArr: string[] = allDateIDs.reduce((acc, innerArr) => acc.concat(innerArr), []).map(x => x.toString());
     let uniqueDateIDStringsRaw = Array.from(new Set(flattenedArr));
     const uniqueDateIDs = Array.from(new Set(uniqueDateIDStringsRaw.join(';').split(';').map(s => s.trim())));
-    const finalIDs = uniqueDateIDs.filter((str) => dateIDRegex.test(str)).map(x => x.match(dateIDRegex)[0]);
+    //const finalIDs = uniqueDateIDs.filter((str) => dateIDRegex.test(str)).map(x => x.match(dateIDRegex)[0]); // Prev: 3/14
+    const finalIDs = uniqueDateIDs.filter((str) => dateIDRegex.test(str)).map(x => x.trim()); // Filter based on regex
+
+    if(finalIDs.length ===0){
+      throw new Error("Clinic dates are not in a valid format");
+    }
+    else if(hasDuplicates(finalIDs)){
+      throw new Error("Clinic "+ CLINICS[clinicIdx][LONG_NAME]+" has duplicate date IDs."); // Likely error with time regex
+    }
+    //console.log(finalIDs);
 
     finalIDs.forEach((id) => {
       let availability: AvailabilityDate = {
@@ -356,7 +396,7 @@ function assignClinicPools(users: User[], values: (string | number | boolean)[][
         SpanishTranslatorPool: [],
         DefaultUserAssignments: new Set<User>(),
         SpanishTranslatorAssignments: new Set<User>(),
-        NumDefaultByYr: [0, 0, 0, 0] // MS1,2,3,4
+        NumDefaultByYr: [0, 0, 0, 0, 0] // MS0,1,2,3,4
       };
       dates[id] = availability;
     });
@@ -393,7 +433,10 @@ function assignClinicPools(users: User[], values: (string | number | boolean)[][
 
     // "No Dates Available / Not Interested;"
     if (availabilityStr.toLowerCase().includes('no')) { return [false, []]; }
-    const ids = availabilityStr.split(';').filter((str) => dateIDRegex.test(str)).map(x => x.match(dateIDRegex)[0]);
+    // Prev approach: 3/14 as an id
+    //const ids = availabilityStr.split(';').filter((str) => dateIDRegex.test(str)).map(x => x.match(dateIDRegex)[0]);
+    // Get full string as id:
+    const ids = availabilityStr.split(';').filter((str) => dateIDRegex.test(str)).map(x => x.trim());
 
     return [true, ids];
   }
@@ -402,9 +445,11 @@ function assignClinicPools(users: User[], values: (string | number | boolean)[][
   // Note this does not prevent duplicate assignments across clinics on the same day and needs to be adjusted after filter, also does not apply prompt maxes per pool
   users.forEach(
     (user) => {
+      let anyAssignment = false; // Error checking
       user.ClinicsOfInterest.forEach((clinicIdx) => {  // First filter by clinics of interest
         const [valid, ids] = userIsValid(user, clinicIdx);
         if (valid) {
+          anyAssignment = true; // was user assigned to any pool?
           //clinics[clinicIdx].DefaultUserPool.push(user);
           for (let dateID of ids) {
             if (user.Type == UserType.Default) {
@@ -416,6 +461,11 @@ function assignClinicPools(users: User[], values: (string | number | boolean)[][
           }
         }
       });
+      // Volunteer was not assigned to any clinic pool - either clinic names are invalid or in TESTING mode
+      if(!anyAssignment && !TESTING){
+        console.log("Invalid user " + user.Name + " likely chose \"Not Interested\" on all clinics.");
+        //throw new Error("Invalid volunteer " + user.Name);
+      }
     }
   );
 
@@ -475,13 +525,13 @@ function firstByRank(clinic: ClinicAssignment, pool: User[], language: string, d
   }
 
   if (tie.length === 1) {
-    console.log(clinic.Name + " " + language + ", rank " + topRank + " | " + tie[0].Name + " | " + date.DateID);
+    if(VERBOSE) console.log(clinic.Name + " " + language + ", rank " + topRank + " | " + tie[0].Name + " | " + date.DateID);
     return tie[0];
   }
   else {
     // Get tie of the users tied at the current rank:
     const randomIndex = Math.floor(Math.random() * tie.length);
-    console.log(clinic.Name + " tie, rank " + topRank + " | " + tie[randomIndex].Name + " | " + date.DateID);
+    if(VERBOSE) console.log(clinic.Name + " tie, rank " + topRank + " | " + tie[randomIndex].Name + " | " + date.DateID);
     return tie[randomIndex];
   }
 }
@@ -493,10 +543,12 @@ function rankAndChooseUsers(users: User[], assignments: ClinicAssignment[], valu
   // TODO: this assumes all the same date, and TODO: use start date year for new Date()
   let allDates = assignments.map((clinic) => Object.values(clinic.AvailabilityDict).map((date) => date.DateID)).reduce((acc, cur) => [...acc, ...cur], []);
   let uniqueDates = Array.from(new Set(allDates));
-  const sortedDates: string[] = uniqueDates.sort((a, b) => {
+  let sortedDates = uniqueDates;
+  // TODO: This was removed with the introduction of time ranges
+  /*const sortedDates: string[] = uniqueDates.sort((a, b) => {
     const [aMonth, aDay] = a.split('/'), [bMonth, bDay] = b.split('/');
     return new Date(parseInt(aMonth) - 1, parseInt(aDay)).getTime() - new Date(parseInt(bMonth) - 1, parseInt(bDay)).getTime();
-  });
+  });*/
   console.log("Parsing the following dates:", sortedDates);
 
   // VISIT each date separately for multi-assignment:
