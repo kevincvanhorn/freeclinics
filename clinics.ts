@@ -349,6 +349,24 @@ const hasDuplicates = (array: string[]): boolean => {
 
 const dateIDRegex = new RegExp("(1[0-2]|0?[1-9])\/(3[01]|[12][0-9]|0?[1-9])"); // Get match [1-12]/[1-31] including 01/02
 
+function checkForDateDuplicates(dateIDs : string[]){
+  if(hasDuplicates(dateIDs)){
+    throw new Error("Dates have duplicate IDs."); // Two dates have the same name
+  }
+  // Warning for overlap
+  let rr = /\d/;
+  let processed : string[] = dateIDs.map(x => x.replace(/\s/g, "")).map(x=>{
+    if(x.includes('a')){ x= x.substring(0, x.lastIndexOf('a')); }
+    if(x.includes('p')){ x = x.substring(0, x.lastIndexOf('p')); }
+    if(x.includes('(')){ x= x.substring(0, x.lastIndexOf('(')); }
+    return x;
+  });
+  if(hasDuplicates(processed)){
+    console.log('Warning: dates have duplicates but are not the exact same string. Please correct dates in form or validate results for date overlap.');
+    if(VERBOSE) console.log(processed);
+  }
+}
+
 function assignClinicPools(users: User[], values: (string | number | boolean)[][], promptSheet: ExcelScript.Worksheet): ClinicAssignment[] {
   // Get all date-specific columns:
   const headerValues = values[0];
@@ -550,6 +568,7 @@ function rankAndChooseUsers(users: User[], assignments: ClinicAssignment[], valu
     return new Date(parseInt(aMonth) - 1, parseInt(aDay)).getTime() - new Date(parseInt(bMonth) - 1, parseInt(bDay)).getTime();
   });*/
   console.log("Parsing the following dates:", sortedDates);
+  checkForDateDuplicates(sortedDates);
 
   // VISIT each date separately for multi-assignment:
   sortedDates.forEach((dateQuery) => {
