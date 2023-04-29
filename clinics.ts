@@ -6,8 +6,10 @@ const VERBOSE = false;
 // TODO: Spanish general volunteer type
 // TODO: datetime overlap & get sorting functionality back
 // Validate: no issues with extra clinic
-// TODO: electives
 // TODO: another pass for users that didn't make it - prevents over greedy few people
+// TODO: option to sort year first over rank in prompts
+// TODO: randomize after sorting when relevant
+// TODO: add more group validation
 
 //#region Objects [b]
 interface User {
@@ -42,8 +44,8 @@ interface ClinicAssignment {
   MaxSpanishUsers: number
   MaxDefaultUsers: number // Note Spanish pool is not affected by constraints except for overall Max
   MaxConstraints: number[] // Max of MS1, MS2, MS3, MS4 by const indices
-  SharedMaxIndices: number[][] // Sets that should share the same bool 
-  // ex MS1 & MS2 shared => [[0,1][] 
+  SharedMaxIndices: number[][] // An array of subgroups (ex. [{MS0, MS1}, {MS2}]) to indicate which MaxConstraints values are shared
+  // ex MS0 & MS1 shared => [[0,1]], then MS0 & MS1 share the same constraint number, so if MS0 = 2max and MS1 = 2max, then the group [MS0,MS1] is 2  
   PreferElective : EPreference,
   Tiebreaker : ETieBreaker
 }
@@ -79,6 +81,7 @@ interface AvailabilityDate {
   SpanishTranslatorAssignments: Set<User>
 
   NumDefaultByYr: number[] // number of MS0, MS1, MS2, MS3, MS4 by const indices, used for assignment algorithm
+  Groups : {years: number[], cur: number, max: number}[] // cache for tracking group constraints, years are the linked years (MS1, MS2), cur are current number of users for this date, max is the total users that can be assigned here
 }
 
 const SHORT_NAME: number = 0;
@@ -218,19 +221,28 @@ function getPromptConstraints(clinicIdx: number, promptSheet: ExcelScript.Worksh
   for (let r = 0; r < NUM_GROUPS; ++r) { // r corresponds to row and also year index ex: MS1 = 0
     let groupCell = values[r + offset][clinicCol].toString().toLowerCase();
     let subgroup: number[] = [];
-    for (let y = 1; y <= 4; ++y) { // y is year number (1-indexed)
+    for (let y = 0; y < NUM_GROUPS; ++y) { // y is year number (1-indexed) [0,1,2,3,4] MS0-MS4
       if (groupCell.includes(y.toString())) {
-        subgroup.push(y - 1); // convert to year index (ex: MS1 = 0)
-        if (foundIndices.includes(y - 1)) {
-          throw new Error("Column " + longName + " group constraints arenot valid.");
+        subgroup.push(y); // convert to year index (ex: MS0 = 0)
+        if (foundIndices.includes(y)) {
+          throw new Error("Column " + longName + " group constraints are not valid.");
         }
-        foundIndices.push(y - 1);
+        foundIndices.push(y);
       }
     }
-    if (subgroup.length > 1) {
+    if (subgroup.length >= 1) {
+      // All subgroup years should have the same number for their constraint if linked together. (a more user friendly version of this would just merge the cells if linked)
+      if(!subgroup.map(i => maxConstraints[i]).every(x=>x === maxConstraints[subgroup[0]])){
+        throw new Error("Check constraints in prompt sheet for "+ CLINICS[clinicIdx][LONG_NAME]+". All values in a subgroup should be the same value to form a ratio with respect to the total.");
+      }
       groups.push(subgroup);
     }
   }
+
+  if(groups.reduce((sum,cur)=>sum + cur.reduce((_sum, _cur)=>_sum + maxConstraints[_cur], 0), 0) !== maxConstraints.reduce((s,c)=>s + c, 0)){
+    throw new Error("Default volunteer cumulative year constraints are not represented in the subgroups for "+CLINICS[clinicIdx][LONG_NAME]+" ex. if Max MS1 = 2 then MS1 should be a group");
+  }
+
 
   let eString : string = values[13][clinicCol].toString().toLowerCase(); // B14
   let preferElective = EPreference.No;
@@ -244,7 +256,7 @@ function getPromptConstraints(clinicIdx: number, promptSheet: ExcelScript.Worksh
   if(tieString.includes('year') && tieString.includes('desc')) tieBreaker = ETieBreaker.YearDescending;
   else if(tieString.includes('year') && tieString.includes('asc')) tieBreaker = ETieBreaker.YearAscending;
   else if(tieString.includes('rand')) tieBreaker = ETieBreaker.Random;
-  else throw new Error("Invalid tiebreaker in prompt: expected {year ascending, year descending, random} : " + tieString);
+  else throw new Error("Invalid tiebreaker in prompt: expected {year ascending, year descending, random} : found" + tieString);
 
   return { maxDefaultUsers, maxSpanUsers, maxConstraints, groups, preferElective, tieBreaker };
 }
@@ -424,7 +436,8 @@ function assignClinicPools(users: User[], values: (string | number | boolean)[][
       ? index : null
   ).filter(index => index !== null); // All availability date columns
   const allHeaderDateVals = headerValues.filter((_, i) => allHeaderDateCols.includes(i)); // All availability date names
-  function getAvailabilityDates(clinicIdx: number): { dates: AvailabilityDict, headerDateCol: number } {
+  
+  function getAvailabilityDates(clinicIdx: number, sharedMaxIndices : number[][], maxConstraints : number[]): { dates: AvailabilityDict, headerDateCol: number } {
 
     //Get the column index of the "Select Date Availability" for this clinic at given index
     const shortClinicName = CLINICS[clinicIdx][SHORT_NAME];
@@ -455,6 +468,10 @@ function assignClinicPools(users: User[], values: (string | number | boolean)[][
       throw new Error("Clinic "+ CLINICS[clinicIdx][LONG_NAME]+" has duplicate date IDs."); // Likely error with time regex
     }
     //console.log(finalIDs);
+    let groups : {years: number[], cur: number, max: number}[] = [];
+    sharedMaxIndices.forEach(sub=>{
+      groups.push({years:sub, cur:0, max:maxConstraints[sub[0]]}); // Note error validation for this takes place when maxConstraints is generated
+    })
 
     finalIDs.forEach((id) => {
       let availability: AvailabilityDate = {
@@ -463,7 +480,8 @@ function assignClinicPools(users: User[], values: (string | number | boolean)[][
         SpanishTranslatorPool: [],
         DefaultUserAssignments: new Set<User>(),
         SpanishTranslatorAssignments: new Set<User>(),
-        NumDefaultByYr: [0, 0, 0, 0, 0] // MS0,1,2,3,4
+        NumDefaultByYr: [0, 0, 0, 0, 0], // MS0,1,2,3,4
+        Groups: groups
       };
       dates[id] = availability;
     });
@@ -476,7 +494,7 @@ function assignClinicPools(users: User[], values: (string | number | boolean)[][
   for (let c = 0; c < CLINICS.length; ++c) {
     let { maxDefaultUsers, maxSpanUsers, maxConstraints, groups, preferElective, tieBreaker } = getPromptConstraints(c, promptSheet);
 
-    let { dates, headerDateCol } = getAvailabilityDates(c);
+    let { dates, headerDateCol } = getAvailabilityDates(c, groups, maxConstraints);
     let clinic: ClinicAssignment = {
       Name: CLINICS[c][LONG_NAME],
       ClinicIndex: c,
@@ -686,8 +704,12 @@ function getMedYearIdx(user : User){
   else throw new Error("Invalid med year string");
 }
 
-function getClinicQueues(users: User[], clinics : ClinicAssignment[], dateID: string, userType : UserType) : {clinic: ClinicAssignment, orderedUsers : User[]}[] {
-  let clinicQueues : {clinic: ClinicAssignment, orderedUsers : User[]}[] = []; // Order is Queue (first is best choice for that clinic)
+/**
+ * Examine each clinic at a given date (if clinic offers that date).
+ * Get Queues based on preference, tie-preference, and user pools.
+ */
+function getClinicQueues(users: User[], clinics : ClinicAssignment[], dateID: string, userType : UserType) : {clinic: ClinicAssignment, orderedUsers : User[], valid:boolean}[] {
+  let clinicQueues : {clinic: ClinicAssignment, orderedUsers : User[], valid: boolean}[] = []; // Order is Queue (first is best choice for that clinic)
 
   clinics.filter(c=> dateID in c.AvailabilityDict).forEach(clinic =>{
     let queue : User[] = [];
@@ -722,16 +744,68 @@ function getClinicQueues(users: User[], clinics : ClinicAssignment[], dateID: st
       return 0;
     });
 
-    //if(clinic.PreferElective === EPreference.Yes){
-      console.log(clinic.Name + " " + dateID + " " + (userType === UserType.Default ? "default" : "other"));
-      console.log(queue.map(x=>'r: ' + x.RanksByClinic[clinic.ClinicIndex] + ', elective ' + x.Elective + ', '+ x.MedYear));
-    //}
+    // TODO: randomize or validate that it is first come first serve here and adjust the terminology
+
+    //console.log(clinic.Name + " " + dateID + " " + (userType === UserType.Default ? "default" : "other"));
+    //console.log(queue.map(x=>'r: ' + x.RanksByClinic[clinic.ClinicIndex] + ', elective ' + x.Elective + ', '+ x.MedYear));
 
     // Add queue and clinic pairing:
-    clinicQueues.push({clinic, orderedUsers:queue});
+    clinicQueues.push({clinic, orderedUsers:queue, valid: queue.length > 0});
   });
 
   return clinicQueues;
+}
+
+/**
+ * Given an ordered list of users of type userType for a clinic's availability date pool,
+ * Assign *ONE* user from the front of the orderedUsers queue if possible (based on clinic constraints) 
+ * Return the assigned user.
+ */
+function tryAssignFromQueue(clinic : ClinicAssignment, dateId : string, orderedUsers : User[], userType : UserType){
+  let date = clinic.AvailabilityDict[dateId];
+
+  // Any users? 
+  if(orderedUsers.length === 0) return undefined;
+  let userToAssign = orderedUsers[0]; // Default to the first user
+
+  // Overall clinic user constraint: Max General / Max Volunteer:
+  if(userType === UserType.Default && date.DefaultUserAssignments.size >= clinic.MaxDefaultUsers) return undefined;
+  else if(userType === UserType.SpanishTranslator && date.SpanishTranslatorAssignments.size >= clinic.MaxSpanishUsers) return undefined;
+  else if(userType === UserType.SpanishVolunteer) throw new Error("Translator Volunteer type is unimplemented");
+
+  // Examine each constraint group, find the first in queue that can be placed in a group:
+  // NOTE: groups are not implicit, even if every year is separate: each year has it's own subgroup
+  let openGroups = date.Groups.filter(g=> g.cur < g.max);
+  let firstOpenUser = orderedUsers.find(u => {
+    let group = openGroups.find(g=> g.years.some(y=> y === getMedYearIdx(u))); // Find a group with a year that matches the current user's year
+    if(group !== undefined){
+      group.cur+=1; // Increase constraint
+      return true;
+    }
+  });
+  if(firstOpenUser !== undefined){ // Success!
+    userToAssign =  firstOpenUser;
+  }
+
+  // Case: no users to satisfy grouping constraints but clinic is not yet full at this date, compromise
+  // Note if in the group ratios, an item is 0, then we will never try to pull from it
+  userToAssign =  orderedUsers[0]; // Redundant assignment
+
+  // Actually assign to the clinic:
+  if(userToAssign !== undefined){
+    if(userType === UserType.Default){
+      date.DefaultUserAssignments.add(userToAssign);
+    }
+    else if(userType === UserType.SpanishTranslator){
+      date.SpanishTranslatorAssignments.add(userToAssign);
+    }
+    userToAssign.DateIDsAssigned.add(date.DateID); // Back reference to where this user was assigned.
+    userToAssign.NumAssignments++; // Increment user assignments across the entire session (not just the date)
+  }
+  return userToAssign;
+
+  // ...
+  // No other way to assign, unless we pull an already-assigned user from another bucket
 }
 
 function rankAndChooseUsers(users: User[], assignments: ClinicAssignment[], values: (string | number | boolean)[][]) {
@@ -751,15 +825,39 @@ function rankAndChooseUsers(users: User[], assignments: ClinicAssignment[], valu
   const passes = [Pass.Preference, Pass.Fill];
 
   // Visit each date:
-  let userTypes = [UserType.Default, UserType.SpanishVolunteer];
+  let userTypes = [UserType.Default, UserType.SpanishTranslator];
   sortedDates.forEach((dateId)=>{
     userTypes.forEach((userType)=>{
       let clinicQueues = getClinicQueues(users, assignments, dateId, userType); // Get sorted pools for each clinic filtered for this date ID, in order of Queue (first = best option)
+      // At this point, no users have been applied for this date, now grab the best option for each clinic, taking into account constraints:
+      
+      let numAssigned = 0;
+      do {
+        numAssigned = 0;
+
+        // TODO order clinic assignments (b/c assigning a user to a bucket for this date, will take it away from another)
+        // Assign, breadth-first: this prioritizes clinics more than user preference in some cases but is safer to prevent underfilling (when a hotly contested, large bucket takes all users from a smaller, less popular bucket)
+        clinicQueues.filter(x=>x.valid).forEach( q=>{
+          let assigned : User = tryAssignFromQueue(q.clinic, dateId, q.orderedUsers, userType);
+          if(assigned !== undefined){
+              numAssigned++;
+              // Remove element from ordered users:
+              const aIdx = q.orderedUsers.indexOf(assigned, 0);
+              if (aIdx > -1) {
+                q.orderedUsers.splice(aIdx, 1);
+              }
+              else throw new Error('Failed to remove assigned user from ordered queue.');
+          }
+          else{ // Remove {clinic, queue} from clinicQueues query entirely
+            // Case: this clinic-date pool is filled OR no more users are available meeting the constraints
+            q.valid = false;
+          }
+        });
+        numAssigned++;
+      } while (numAssigned != 0)
+
     });
   });
-
-  throw new Error('done');
-
 
   // OBSOLETE
   /*sortedDates.forEach((dateQuery)=>{
