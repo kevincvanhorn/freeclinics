@@ -838,22 +838,25 @@ function rankAndChooseUsers(users: User[], assignments: ClinicAssignment[], valu
         // TODO order clinic assignments (b/c assigning a user to a bucket for this date, will take it away from another)
         // Assign, breadth-first: this prioritizes clinics more than user preference in some cases but is safer to prevent underfilling (when a hotly contested, large bucket takes all users from a smaller, less popular bucket)
         clinicQueues.filter(x=>x.valid).forEach( q=>{
-          let assigned : User = tryAssignFromQueue(q.clinic, dateId, q.orderedUsers, userType);
+          let assigned = tryAssignFromQueue(q.clinic, dateId, q.orderedUsers, userType);
           if(assigned !== undefined){
               numAssigned++;
               // Remove element from ordered users:
               const aIdx = q.orderedUsers.indexOf(assigned, 0);
               if (aIdx > -1) {
+                // Successful assignment!
+                numAssigned++;
                 q.orderedUsers.splice(aIdx, 1);
               }
               else throw new Error('Failed to remove assigned user from ordered queue.');
           }
-          else{ // Remove {clinic, queue} from clinicQueues query entirely
+          else{ 
+            // Try again!
             // Case: this clinic-date pool is filled OR no more users are available meeting the constraints
+            // Effectively remove {clinic, queue} from clinicQueues query entirely
             q.valid = false;
           }
         });
-        numAssigned++;
       } while (numAssigned != 0)
 
     });
