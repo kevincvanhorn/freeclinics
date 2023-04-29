@@ -1,15 +1,12 @@
 const TESTING = true;
 const VERBOSE = false;
+const PENALIZE_MULTIPLE = 1.5; // Penalize user with +# rank everytime they're assigned this session (opens up room for users)
 
-// TODO: constraint support
-// Spread assignment - based on user pool per iteration
 // TODO: Spanish general volunteer type
 // TODO: datetime overlap & get sorting functionality back
-// Validate: no issues with extra clinic
-// TODO: another pass for users that didn't make it - prevents over greedy few people
-// TODO: option to sort year first over rank in prompts
+// TODO: option to sort year first over rank in prompts (right now its only year sorting for rank ties)
 // TODO: randomize after sorting when relevant
-// TODO: add more group validation
+// TODO: post-processing to give unassigned users a spot & prevent 1 user from repeating clinic in a session
 
 //#region Objects [b]
 interface User {
@@ -740,7 +737,8 @@ function getClinicQueues(users: User[], clinics : ClinicAssignment[], dateID: st
     }
     // Sort ascending with preferences:
     queue.sort((a,b)=>{
-      let aRank = a.RanksByClinic[clinic.ClinicIndex]; let bRank = b.RanksByClinic[clinic.ClinicIndex];
+      let aRank = a.RanksByClinic[clinic.ClinicIndex] + (a.NumAssignments *PENALIZE_MULTIPLE); 
+      let bRank = b.RanksByClinic[clinic.ClinicIndex] + (b.NumAssignments *PENALIZE_MULTIPLE);
       if(aRank > bRank) return 1;
       else if(aRank < bRank) return -1;
       else{ // Tie ordering:
