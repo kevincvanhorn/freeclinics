@@ -1,8 +1,5 @@
-import { Exception } from "@microsoft/office-js-helpers";
-
 const TESTING = true;
 const VERBOSE = false;
-const ELECTIVE_MOD = 1; // -1 from rank if prefer elective
 
 // TODO: constraint support
 // Spread assignment - based on user pool per iteration
@@ -21,7 +18,8 @@ interface User {
   ClinicsOfInterest: number[] // Clinics of interest for this user
   Type: UserType    // Default or Translator
   NumAssignments: number // Number of clninic dates this user has been assigned to
-  ClinicRanks: string[] // first index is the highest preference
+  ClinicRanks: string[], // first index is the highest preference
+  RanksByClinic: number[], // 1-indexed ranks where 1 is best, parallel to CLINICS
 
   // CACHE
   DateIDsAvailable: Set<string> // Which dates can this be assigned to? 
@@ -46,13 +44,20 @@ interface ClinicAssignment {
   MaxConstraints: number[] // Max of MS1, MS2, MS3, MS4 by const indices
   SharedMaxIndices: number[][] // Sets that should share the same bool 
   // ex MS1 & MS2 shared => [[0,1][] 
-  PreferElective : EPreference
+  PreferElective : EPreference,
+  Tiebreaker : ETieBreaker
 }
 
 enum EPreference{
   Yes,
   No,
   Only
+}
+
+enum ETieBreaker{
+  Random,
+  YearDescending,
+  YearAscending,
 }
 
 const MS0 = 0;
@@ -112,20 +117,28 @@ function translatorType(str: string): UserType {
 
 /**
  * Get list of clinic short names by rank.
+ * Also store 1-indexed ranking parallel to CLINICS for faster recall
  */
-function getClinicRanks(str: string) {
+function getClinicRanks(str: string) : {sortedRanks : string[], ranksByClinic : number[]}{
   let ranks: string[] = [];
+  let ranksByClinic : number[] = [];
+  for(let i =0; i < CLINICS.length; ++i){ranksByClinic.push(-1);}
+
   let names_long = str.split(';').filter((x) => x !== undefined && x.length > 0);
+  let r = 1;
   for (let name of names_long) {
     let i = CLINICS.findIndex((c) => name.toLowerCase().includes(c[SHORT_NAME].toLowerCase()));
     ranks.push(CLINICS[i][SHORT_NAME])
+    ranksByClinic[i] = r;
+    r++;
   }
 
   if (names_long.length !== ranks.length) {
     throw new Error("Unexpected ranking format in column.");
   }
+  if(ranksByClinic.some(x=>x <= 0)) throw new Error("Invalid or missing 1-indexed ranks. Does the rank question include all clinics?");
 
-  return ranks;
+  return {sortedRanks : ranks, ranksByClinic};
 }
 
 
@@ -161,7 +174,8 @@ function validatePromptCells(promptSheet: ExcelScript.Worksheet){
       && promptSheet.getRange("A11").getValue() === "Group 3"
       && promptSheet.getRange("A12").getValue() === "Group 4"
       && promptSheet.getRange("A13").getValue() === "Group 5"
-      && promptSheet.getRange("A14").getValue() === "Prioritize Elective?";
+      && promptSheet.getRange("A14").getValue() === "Prioritize Elective?"
+      && promptSheet.getRange("A15").getValue() === "Tie Breaker";
 
     if (!valid) {
       throw new Error("Unexpected prompt ordering.");
@@ -218,14 +232,21 @@ function getPromptConstraints(clinicIdx: number, promptSheet: ExcelScript.Worksh
     }
   }
 
-  let eString = values[13].toLowerCase(); // B14
+  let eString : string = values[13][clinicCol].toString().toLowerCase(); // B14
   let preferElective = EPreference.No;
   if(eString.includes('yes')) preferElective = EPreference.Yes;
   else if(eString.includes('no')) preferElective = EPreference.No;
   else if(eString.includes('only')) preferElective = EPreference.Only;
-  else throw new Exception("Invalid preference in prompt: expected {yes, no, only}");
+  else throw new Error("Invalid preference in prompt: expected {yes, no, only}");
 
-  return { maxDefaultUsers, maxSpanUsers, maxConstraints, groups, preferElective };
+  let tieString : string = values[14][clinicCol].toString().toLowerCase(); // B15
+  let tieBreaker = ETieBreaker.Random;
+  if(tieString.includes('year') && tieString.includes('desc')) tieBreaker = ETieBreaker.YearDescending;
+  else if(tieString.includes('year') && tieString.includes('asc')) tieBreaker = ETieBreaker.YearAscending;
+  else if(tieString.includes('rand')) tieBreaker = ETieBreaker.Random;
+  else throw new Error("Invalid tiebreaker in prompt: expected {year ascending, year descending, random} : " + tieString);
+
+  return { maxDefaultUsers, maxSpanUsers, maxConstraints, groups, preferElective, tieBreaker };
 }
 
 /**
@@ -298,6 +319,7 @@ function main(workbook: ExcelScript.Workbook) {
   // Create user objects ---------------------------
   let users: User[] = [];
   for (let r = 1; r < values.length/*numRows*/; r++) {
+    let {sortedRanks, ranksByClinic} = getClinicRanks(values[r][rankIdx].toString());
     let user: User = {
       Row: r,
       Name: values[r][nameIdx].toString(),
@@ -308,7 +330,8 @@ function main(workbook: ExcelScript.Workbook) {
       NumAssignments: 0,
       DateIDsAvailable: new Set<string>(),
       DateIDsAssigned: new Set<string>(),
-      ClinicRanks: getClinicRanks(values[r][rankIdx].toString())
+      ClinicRanks: sortedRanks,
+      RanksByClinic : ranksByClinic
     };
     users.push(user);
   }
@@ -451,7 +474,7 @@ function assignClinicPools(users: User[], values: (string | number | boolean)[][
   // Initialize clinic assignment objects:
   let clinics: ClinicAssignment[] = [];
   for (let c = 0; c < CLINICS.length; ++c) {
-    let { maxDefaultUsers, maxSpanUsers, maxConstraints, groups, preferElective } = getPromptConstraints(c, promptSheet);
+    let { maxDefaultUsers, maxSpanUsers, maxConstraints, groups, preferElective, tieBreaker } = getPromptConstraints(c, promptSheet);
 
     let { dates, headerDateCol } = getAvailabilityDates(c);
     let clinic: ClinicAssignment = {
@@ -463,7 +486,8 @@ function assignClinicPools(users: User[], values: (string | number | boolean)[][
       MaxDefaultUsers: maxDefaultUsers,
       MaxConstraints: maxConstraints,
       SharedMaxIndices: groups,
-      PreferElective: preferElective
+      PreferElective: preferElective,
+      Tiebreaker: tieBreaker
     };
     clinics.push(clinic);
   }
@@ -590,7 +614,7 @@ function firstByRank(clinic: ClinicAssignment, pool: User[], language: string, d
 /**
  * Get all of the users at the minimum rank given the available clinics for assignment
  */
-function minRankUsers(availableUsers : Set<User>, availableClinics : Set<ClinicAssignment>, rankFloor:number) : {user:User, clinic:ClinicAssignment}[]{
+/*function minRankUsers(availableUsers : Set<User>, availableClinics : Set<ClinicAssignment>, rankFloor:number) : {user:User, clinic:ClinicAssignment}[]{
   let minrank = 1000; // feasibly no way for 1000 clinics
 
   let minMap : {rank : number, userPool : {user:User, clinic:ClinicAssignment}[]}[] = [];
@@ -618,7 +642,7 @@ function minRankUsers(availableUsers : Set<User>, availableClinics : Set<ClinicA
   let r = minMap.findIndex(x=>x.rank == minrank);
   if(r < 0) throw new Error("Invalid indexing for rank determination from min.");
   return minMap[r].userPool; // Get all users with the lowest rank
-}
+}*/
 
 enum Pass {
   Preference,  // try to assign by rank respecting groups and clinic constraints + preferences (ex. only one MS1)
@@ -652,6 +676,64 @@ function tryAssignFromTie(tie : User[], clinic : ClinicAssignment, userType : Us
   }
 }
 
+function getMedYearIdx(user : User){
+  // MS0 = 0, MS1 = 1, MS2 = 2, MS3 = 0
+  if(user.MedYear.includes('0')) return 0;
+  else if(user.MedYear.includes('1')) return 1;
+  else if(user.MedYear.includes('2')) return 2;
+  else if(user.MedYear.includes('3')) return 3;
+  else if(user.MedYear.includes('4')) return 4;
+  else throw new Error("Invalid med year string");
+}
+
+function getClinicQueues(users: User[], clinics : ClinicAssignment[], dateID: string, userType : UserType) : {clinic: ClinicAssignment, orderedUsers : User[]}[] {
+  let clinicQueues : {clinic: ClinicAssignment, orderedUsers : User[]}[] = []; // Order is Queue (first is best choice for that clinic)
+
+  clinics.filter(c=> dateID in c.AvailabilityDict).forEach(clinic =>{
+    let queue : User[] = [];
+    // Get filtered users for this date id
+    if(userType === UserType.Default){
+      queue = clinic.AvailabilityDict[dateID].DefaultUserPool;
+    }
+    else if(userType === UserType.SpanishTranslator){
+      queue = clinic.AvailabilityDict[dateID].SpanishTranslatorPool;
+    }
+    // Sort ascending with preferences:
+    queue.sort((a,b)=>{
+      let aRank = a.RanksByClinic[clinic.ClinicIndex]; let bRank = b.RanksByClinic[clinic.ClinicIndex];
+      if(aRank > bRank) return 1;
+      else if(aRank < bRank) return -1;
+      else{ // Tie ordering:
+        // Elective, then Year ordering (if relevant)
+        if(clinic.PreferElective === EPreference.Yes){
+          if(a.Elective && !b.Elective) return -1; // if a.Elective, sort it before the non-elective
+          else if(!a.Elective && b.Elective) return 1;
+          else{
+            if(clinic.Tiebreaker === ETieBreaker.YearAscending) return getMedYearIdx(a) - getMedYearIdx(b);
+            else if(clinic.Tiebreaker === ETieBreaker.YearDescending) return getMedYearIdx(b) - getMedYearIdx(a);
+            else return 0; // Random is default
+          }
+        }
+        // Year ordering (if relevant):
+        else if(clinic.Tiebreaker === ETieBreaker.YearAscending) return getMedYearIdx(a) - getMedYearIdx(b);
+        else if(clinic.Tiebreaker === ETieBreaker.YearDescending) return getMedYearIdx(b) - getMedYearIdx(a);
+        else return 0; // Random is deafult
+      }
+      return 0;
+    });
+
+    //if(clinic.PreferElective === EPreference.Yes){
+      console.log(clinic.Name + " " + dateID + " " + (userType === UserType.Default ? "default" : "other"));
+      console.log(queue.map(x=>'r: ' + x.RanksByClinic[clinic.ClinicIndex] + ', elective ' + x.Elective + ', '+ x.MedYear));
+    //}
+
+    // Add queue and clinic pairing:
+    clinicQueues.push({clinic, orderedUsers:queue});
+  });
+
+  return clinicQueues;
+}
+
 function rankAndChooseUsers(users: User[], assignments: ClinicAssignment[], values: (string | number | boolean)[][]) {
   // Get all dates to process across all clinics:
   // TODO: this assumes all the same date, and TODO: use start date year for new Date()
@@ -670,7 +752,17 @@ function rankAndChooseUsers(users: User[], assignments: ClinicAssignment[], valu
 
   // Visit each date:
   let userTypes = [UserType.Default, UserType.SpanishVolunteer];
-  sortedDates.forEach((dateQuery)=>{
+  sortedDates.forEach((dateId)=>{
+    userTypes.forEach((userType)=>{
+      let clinicQueues = getClinicQueues(users, assignments, dateId, userType); // Get sorted pools for each clinic filtered for this date ID, in order of Queue (first = best option)
+    });
+  });
+
+  throw new Error('done');
+
+
+  // OBSOLETE
+  /*sortedDates.forEach((dateQuery)=>{
     let numAssigned =0;
     
       userTypes.forEach((userType)=>{
@@ -678,7 +770,6 @@ function rankAndChooseUsers(users: User[], assignments: ClinicAssignment[], valu
         let availableClinics = new Set(assignments); // This assumes that each clinic wants at least one user of both types
 
         // Get distribution of users across clinics at each rank for this date id:
-        //let clinicQueues : {clinic: ClinicAssignment, orderedUsers : User[]}[] = []; // Order is Queue (first is best choice for that clinic)
         
 
         for(let pass =0; pass < 2; ++pass){
@@ -719,7 +810,7 @@ function rankAndChooseUsers(users: User[], assignments: ClinicAssignment[], valu
           } while ((numAssigned != 0 || rankFloor <= CLINICS.length) && availableUsers.size > 0 && availableClinics.size >0);
         }  
       });
-  });
+  });*/
 
   // VISIT each date separately for multi-assignment:
   /*sortedDates.forEach((dateQuery) => {
