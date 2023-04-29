@@ -17,6 +17,7 @@ interface User {
   Name: string
   MedYear: string
   Elective : boolean // Elective course (for 4th years only? - not enforced)
+  Email: string
   ClinicsOfInterest: number[] // Clinics of interest for this user
   Type: UserType    // Default or Translator
   NumAssignments: number // Number of clninic dates this user has been assigned to
@@ -82,6 +83,8 @@ interface AvailabilityDate {
 
   NumDefaultByYr: number[] // number of MS0, MS1, MS2, MS3, MS4 by const indices, used for assignment algorithm
   Groups : {years: number[], cur: number, max: number}[] // cache for tracking group constraints, years are the linked years (MS1, MS2), cur are current number of users for this date, max is the total users that can be assigned here
+  WaitlistDefault : User[]
+  WaitlistTranslator: User[]
 }
 
 const SHORT_NAME: number = 0;
@@ -312,8 +315,9 @@ function main(workbook: ExcelScript.Workbook) {
   const startTimeIdx = headerValues.indexOf("Start time");
   const rankIdx = headerValues.indexOf("Please rank your clinic preference");
   const electiveIdx = headerValues.indexOf("Are you currently in the fourth-year elective?");
+  const emailIdx = headerValues.indexOf("UTSW Email Address");
 
-  if(nameIdx < 0 || yearIdx < 0 || clinicsOfInterestIdx < 0 || translatorIdx < 0 || startTimeIdx < 0 || rankIdx < 0 || electiveIdx < 0){
+  if(nameIdx < 0 || yearIdx < 0 || clinicsOfInterestIdx < 0 || translatorIdx < 0 || startTimeIdx < 0 || rankIdx < 0 || electiveIdx < 0 || emailIdx < 0){
     throw new Error("Invalid Headers - check that names have not been changed");
   }
 
@@ -343,7 +347,8 @@ function main(workbook: ExcelScript.Workbook) {
       DateIDsAvailable: new Set<string>(),
       DateIDsAssigned: new Set<string>(),
       ClinicRanks: sortedRanks,
-      RanksByClinic : ranksByClinic
+      RanksByClinic : ranksByClinic,
+      Email : values[r][emailIdx].toString()
     };
     users.push(user);
   }
@@ -358,20 +363,31 @@ function main(workbook: ExcelScript.Workbook) {
 
   //#endregion
 
+
+
   let resultSheet = workbook.getWorksheet("Results") || workbook.addWorksheet("Results");
   if (resultSheet.getUsedRange() !== undefined) resultSheet.getUsedRange().clear();
   var results: string[][] = [];//getExcelResults(assignments);
 
-  let resultHeader: string[] = ["Clinic", "Date", "Volunteers", "Translators"];
+  let resultHeader: string[] = ["Clinic", "Date", "Volunteers","Translators", "Waitlist-General", "Waitlist-Translator", "Details_Volunteer", "Details_Translators", "Details_WaitlistGeneral", "Details_WaitlistTranslator"];
   results.push(resultHeader);
 
   assignments.forEach((clinic) => {
     Object.values(clinic.AvailabilityDict).forEach((date) => {
       let row: string[] = [];
-      row.push(clinic.Name);
-      row.push(date.DateID);
-      row.push(Object.values(Array.from(date.DefaultUserAssignments).map(u => u.Name)).join(","));
-      row.push(Object.values(Array.from(date.SpanishTranslatorAssignments).map(u => u.Name)).join(","));
+      row.push(clinic.Name); // Clinic
+      row.push(date.DateID); // Clinic Date ID
+      row.push(Object.values(Array.from(date.DefaultUserAssignments).map(u => u.Name)).join(", ")); // General Volunteers
+      row.push(Object.values(Array.from(date.SpanishTranslatorAssignments).map(u => u.Name)).join(", ")); // Translators
+
+      // Waitlist & Details
+      row.push(Object.values(Array.from(date.WaitlistDefault).map(u => u.Name)).join(", ")); // Waitlist
+      row.push(Object.values(Array.from(date.WaitlistTranslator).map(u => u.Name)).join(", ")); // Waitlist
+      row.push(Object.values(Array.from(date.DefaultUserAssignments).map(u => u.Name +'['+rank(u,clinic.ClinicIndex)+']'+ (u.Elective ? '[EL]' : '')+'-'+u.MedYear)).join(", ")); // General Details
+      row.push(Object.values(Array.from(date.SpanishTranslatorAssignments).map(u => u.Name +'['+rank(u,clinic.ClinicIndex)+']'+ (u.Elective ? '[EL]' : '')+'-'+u.MedYear)).join(", ")); // Translator Details
+      row.push(Object.values(Array.from(date.WaitlistDefault).map(u => u.Name +'['+rank(u,clinic.ClinicIndex)+']' + (u.Elective ? '[EL]' : '')+'-'+u.MedYear)).join(", ")); // Waitlist Details
+      row.push(Object.values(Array.from(date.WaitlistTranslator).map(u => u.Name +'['+rank(u,clinic.ClinicIndex)+']'+ (u.Elective ? '[EL]' : '')+'-'+u.MedYear)).join(", ")); // Waitlist Details
+
       results.push(row);
     })
     results.push([]);
@@ -481,7 +497,9 @@ function assignClinicPools(users: User[], values: (string | number | boolean)[][
         DefaultUserAssignments: new Set<User>(),
         SpanishTranslatorAssignments: new Set<User>(),
         NumDefaultByYr: [0, 0, 0, 0, 0], // MS0,1,2,3,4
-        Groups: groups
+        Groups: groups,
+        WaitlistDefault : [],
+        WaitlistTranslator : []
       };
       dates[id] = availability;
     });
@@ -789,7 +807,7 @@ function tryAssignFromQueue(clinic : ClinicAssignment, dateId : string, orderedU
 
   // Case: no users to satisfy grouping constraints but clinic is not yet full at this date, compromise
   // Note if in the group ratios, an item is 0, then we will never try to pull from it
-  userToAssign =  orderedUsers[0]; // Redundant assignment
+  // userToAssign =  orderedUsers[0]; // Assigned at beginning
 
   // Actually assign to the clinic:
   if(userToAssign !== undefined){
@@ -840,15 +858,18 @@ function rankAndChooseUsers(users: User[], assignments: ClinicAssignment[], valu
         clinicQueues.filter(x=>x.valid).forEach( q=>{
           let assigned = tryAssignFromQueue(q.clinic, dateId, q.orderedUsers, userType);
           if(assigned !== undefined){
+              // Successful assignment!
               numAssigned++;
               // Remove element from ordered users:
-              const aIdx = q.orderedUsers.indexOf(assigned, 0);
-              if (aIdx > -1) {
-                // Successful assignment!
-                numAssigned++;
-                q.orderedUsers.splice(aIdx, 1);
-              }
-              else throw new Error('Failed to remove assigned user from ordered queue.');
+              // TODO: much more efficient to keep ordered users in their lists but maintain a Set<Users>, this is cleaner for assignment however
+              clinicQueues.filter(x=>x.valid && x.orderedUsers.some(o=>o===assigned)).forEach(other=>{ 
+                const aIdx = other.orderedUsers.indexOf(assigned as User, 0);
+                if (aIdx > -1) {
+                  other.orderedUsers.splice(aIdx, 1);
+                }
+                else throw new Error('Failed to remove assigned user from ordered queue.');
+              });
+              
           }
           else{ 
             // Try again!
@@ -858,7 +879,12 @@ function rankAndChooseUsers(users: User[], assignments: ClinicAssignment[], valu
           }
         });
       } while (numAssigned != 0)
-
+      
+      // Set waitlist:
+      clinicQueues.forEach(q=>{
+        if(userType === UserType.Default) q.clinic.AvailabilityDict[dateId].WaitlistDefault = q.orderedUsers; // Remaing users that haven't been assigned
+        else if(userType === UserType.SpanishTranslator) q.clinic.AvailabilityDict[dateId].WaitlistTranslator = q.orderedUsers;
+      });
     });
   });
 
