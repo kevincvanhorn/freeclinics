@@ -1,3 +1,15 @@
+1. Filters
+2. Sorted by preference
+   > preference tie breakers
+3. Visit each date possibility
+   > There is a rank penalty per volunteer to prevent one volunteer with highest preference from taking all of the spots (+1.5 rank each assignment)
+4. Assign breadth-first (one to each clinic first)
+   > Assign based on constraints (fill all first)
+   > if none meet the constraints, assign next by Preference
+
+
+==========
+
 1. Forms > Input
 2. Main filters:
    *the easy part*
